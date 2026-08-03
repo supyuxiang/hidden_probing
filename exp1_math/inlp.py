@@ -1,106 +1,131 @@
 """
-Iterative Null-space Projection (INLP).
+Iterative Null-space Projection (INLP) for removing language-predictive
+directions, following the paper's formulation (Section 3.2, Eq. 2).
 
-Reference: Ravfogel et al., 2020, "Null It Out: Guarding Protected Attributes
-by Iterative Nullspace Projection".
+At each iteration i:
+  1. Train a linear classifier w_i to predict a (binary) protected attribute
+     from hidden states H (one-vs-rest for a given language).
+  2. Project H onto the null space of w_i:
+        P_t      = I - w_i w_i^T / ||w_i||^2          (rank-1, Eq. 2)
+        H_{i+1}  = H_i @ P_t
+  3. Accumulate P_perp = P_1 @ ... @ P_t  (cumulative orthogonal projection).
+Iterate until the classifier accuracy falls to chance (or T iterations).
 
-Given hidden states H (n, d) and a protected attribute y (n,), we iteratively
-train a linear classifier to predict y from H, then project H onto the null
-space of the classifier's weight rowspace. After T iterations the cumulative
-projection P_perp = P_1 @ P_2 @ ... @ P_T removes the linear information about y.
-
-Key equations (matching the paper):
-    P_t = I - W_t^T (W_t W_t^T)^+ W_t        (Eq. 5)
-    H_{t+1} = H_t P_t                         (Eq. 6)
-    P_perp = prod_{t=1}^{T} P_t               (Eq. 7)
+Returns:
+  H_proj  : (n, d) hidden states after removing all identified language directions.
+  P_perp  : (d, d) cumulative projection P_1 @ ... @ P_T (apply to fresh H with H @ P_perp).
+  P_lang  : (k, d) stacked removed direction vectors w_i (rowspace = language subspace).
+  accs    : list[float] per-iteration classifier accuracy (information removed).
 """
 
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.optim import AdamW
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from exp1_math.model import Classifier_Linear
+
+class _BinaryLinearClassifier(nn.Module):
+    """Single-layer logistic regression: logit = H @ w + b (w is the protected direction)."""
+
+    def __init__(self, input_dim: int):
+        super().__init__()
+        self.linear = nn.Linear(input_dim, 1)
+        nn.init.xavier_normal_(self.linear.weight)
+        nn.init.zeros_(self.linear.bias)
+
+    def forward(self, H: torch.Tensor) -> torch.Tensor:
+        return self.linear(H).squeeze(-1)  # (n,)
+
+    def weight_vector(self) -> torch.Tensor:
+        return self.linear.weight.detach().squeeze(0)  # (d,)
 
 
-def _train_linear_classifier(
+def _train_binary_classifier(
     H: torch.Tensor,
     y: torch.Tensor,
-    num_classes: int,
     input_dim: int,
     epochs: int = 50,
     lr: float = 1e-2,
     weight_decay: float = 0.0,
     device: torch.device | str = 'cpu',
-) -> Classifier_Linear:
-    """Train a single linear classifier (cross-entropy) on H -> y."""
+) -> tuple[_BinaryLinearClassifier, float]:
+    """Train one binary linear classifier (BCE) on H -> y; return (model, train acc)."""
     H = H.to(device).float()
-    y = y.to(device).long()
+    y = y.to(device).float()
 
-    model = Classifier_Linear(input_dim=input_dim, output_dim=num_classes).to(device)
+    model = _BinaryLinearClassifier(input_dim).to(device)
     opt = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    # class-balanced positive weight so the direction isn't dominated by the majority class
+    n_pos = (y == 1).sum().clamp(min=1)
+    n_neg = (y == 0).sum().clamp(min=1)
+    pos_weight = torch.tensor([n_neg / n_pos], device=device)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     model.train()
     for _ in range(epochs):
         logits = model(H)
-        loss = F.cross_entropy(logits, y)
+        loss = loss_fn(logits, y)
         opt.zero_grad()
         loss.backward()
         opt.step()
-    return model
+
+    model.eval()
+    with torch.no_grad():
+        acc = ((torch.sigmoid(model(H)) >= 0.5).float() == y).float().mean().item()
+    return model, acc
 
 
-def compute_projection(W: torch.Tensor) -> torch.Tensor:
+def nullspace_projection(w: torch.Tensor) -> torch.Tensor:
     """
-    Eq. 5: P = I - W^T (W W^T)^+ W.
-
-    Args:
-        W: (k, d) weight matrix of the linear classifier (rows = class directions).
-    Returns:
-        P: (d, d) projection matrix onto the null space of W's rowspace.
+    Eq. 2: P = I - w w^T / ||w||^2.
+    Rank-1 projection onto the subspace orthogonal to the direction w.
     """
-    W = W.float()
-    k, d = W.shape
-    # (d, k) @ (k, k) @ (k, d) -> (d, d)
-    WWT = W @ W.T                       # (k, k)
-    WWT_pinv = torch.linalg.pinv(WWT)   # (k, k)
-    P = torch.eye(d, dtype=W.dtype, device=W.device) - W.T @ WWT_pinv @ W
-    return P
+    w = w.float()
+    d = w.shape[0]
+    norm_sq = (w @ w).clamp_min(1e-12)
+    return torch.eye(d, dtype=w.dtype, device=w.device) - torch.outer(w, w) / norm_sq
+
+
+def one_vs_rest_labels(language_ids: torch.Tensor, target: int) -> torch.Tensor:
+    """Build binary 0/1 labels: 1 where language_ids == target, else 0."""
+    return (language_ids == target).long()
 
 
 def inlp(
     H: torch.Tensor,
     y: torch.Tensor,
-    T: int = 15,
+    T: int = 30,
     epochs_per_iter: int = 50,
     lr: float = 1e-2,
     weight_decay: float = 0.0,
+    chance_tol: float = 0.02,
     device: torch.device | str | None = None,
     verbose: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[float]]:
     """
-    Run INLP for T iterations.
+    Run INLP until the classifier falls to chance (or T iterations).
 
     Args:
-        H: (n, d) hidden states.
-        y: (n,) protected attribute labels (integers).
-        T: number of INLP iterations.
+        H: (n, d) hidden states at a single layer.
+        y: (n,) binary protected labels (0/1), e.g. one-vs-rest for a language.
+        T: max number of INLP iterations.
         epochs_per_iter: epochs to train each per-iteration classifier.
         lr / weight_decay: optimizer args for the per-iteration classifier.
+        chance_tol: stop when clf acc <= chance_acc + chance_tol.
         device: where to run. Defaults to H's device.
         verbose: print per-iteration accuracy.
 
     Returns:
-        H_proj: (n, d) projected hidden states after T iterations.
-        P_perp: (d, d) cumulative projection matrix P_1 @ ... @ P_T.
-        P_list: list of each P_t, for inspection.
+        H_proj : (n, d) projected hidden states.
+        P_perp : (d, d) cumulative projection P_1 @ ... @ P_t.
+        P_lang : (k, d) stacked removed direction vectors w_i.
+        accs   : list[float] per-iteration classifier accuracy.
     """
     if device is None:
         device = H.device
@@ -108,37 +133,43 @@ def inlp(
     y = y.to(device).long()
 
     n, d = H.shape
-    num_classes = int(y.max().item()) + 1
+    chance_acc = max((y == 1).float().mean().item(), (y == 0).float().mean().item())
 
     P_perp = torch.eye(d, device=device, dtype=H.dtype)
-    P_list: list[torch.Tensor] = []
-    H_cur = H.clone()
+    P_lang_rows: list[torch.Tensor] = []
+    accs: list[float] = []
 
+    H_cur = H.clone()
     for t in range(1, T + 1):
-        # 1. train a linear classifier on the *current* (already-projected) H
-        clf = _train_linear_classifier(
-            H_cur, y, num_classes=num_classes, input_dim=d,
+        # 1. train a linear classifier on the current (already-projected) H
+        clf, acc = _train_binary_classifier(
+            H_cur, y, input_dim=d,
             epochs=epochs_per_iter, lr=lr, weight_decay=weight_decay, device=device,
         )
+        accs.append(acc)
 
-        # 2. accuracy of this classifier (information about y remaining in H)
-        clf.eval()
-        with torch.no_grad():
-            acc = (clf(H_cur).argmax(dim=-1) == y).float().mean().item()
+        # 2. stop if the classifier is already at chance (no more linear signal)
+        if acc <= chance_acc + chance_tol:
+            if verbose:
+                print(f'[INLP] iter {t}/{T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) '
+                      f'-> converged, stop')
+            break
 
-        # 3. projection matrix from the classifier's weight (rowspace removal)
-        W = clf.linear.weight.detach()          # (num_classes, d)
-        P_t = compute_projection(W).to(device)  # (d, d)
+        # 3. rank-1 null-space projection along the classifier's weight direction
+        w = clf.weight_vector().to(device)        # (d,)
+        P_t = nullspace_projection(w).to(device)   # (d, d)
 
         # 4. update H and accumulate cumulative projection
         H_cur = H_cur @ P_t
         P_perp = P_perp @ P_t
-        P_list.append(P_t.cpu())
+        P_lang_rows.append(w.detach().cpu())
 
         if verbose:
-            print(f'[INLP] iter {t}/{T} | clf_acc={acc:.4f}')
+            print(f'[INLP] iter {t}/{T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) | '
+                  f'removed {len(P_lang_rows)} dir(s)')
 
-    return H_cur, P_perp, P_list
+    P_lang = torch.stack(P_lang_rows, dim=0) if P_lang_rows else torch.empty((0, d))
+    return H_cur, P_perp, P_lang, accs
 
 
 def project(H: torch.Tensor, P: torch.Tensor) -> torch.Tensor:
@@ -146,29 +177,28 @@ def project(H: torch.Tensor, P: torch.Tensor) -> torch.Tensor:
     return H.float() @ P.to(H.device).float()
 
 
-def set_args():
-    import argparse
-    p = argparse.ArgumentParser()
-
-    return p.parse_args()
-
 def main():
-    # tiny smoke test
+    # smoke test: inject a linear language signal, then erase it with INLP
     torch.manual_seed(0)
-    n, d, k = 200, 64, 3
+    n, d = 200, 64
     H0 = torch.randn(n, d)
-    # inject a linear signal for a 3-class attribute
-    W_true = torch.randn(k, d)
-    y = (H0 @ W_true.T).argmax(dim=-1)
+    # binary protected attribute linearly readable from H
+    w_true = torch.randn(d)
+    y = (H0 @ w_true > 0).long()
 
-    H_proj, P_perp, _ = inlp(H0, y, T=10, epochs_per_iter=80, lr=5e-2, verbose=True)
+    H_proj, P_perp, P_lang, accs = inlp(
+        H0, y, T=20, epochs_per_iter=80, lr=5e-2, verbose=True,
+    )
 
-    # a fresh linear classifier should fail to recover y after projection
-    clf = _train_linear_classifier(H_proj, y, num_classes=k, input_dim=d,
-                                   epochs=80, lr=5e-2)
-    with torch.no_grad():
-        acc_after = (clf(H_proj).argmax(dim=-1) == y).float().mean().item()
-    print(f'accuracy after INLP: {acc_after:.4f} (should be near chance={1/k:.3f})')
+    # a fresh classifier should fail to recover y after projection
+    _, acc_after = _train_binary_classifier(
+        H_proj, y, input_dim=d, epochs=80, lr=5e-2,
+    )
+    print(f'\nINLP iters run: {len(accs)}')
+    print(f'acc per iter: {[round(a, 4) for a in accs]}')
+    print(f'fresh clf acc after INLP: {acc_after:.4f} '
+          f'(should be near chance=0.5)')
+    print(f'removed directions: {P_lang.shape[0]} (d={d})')
 
 
 if __name__ == '__main__':
