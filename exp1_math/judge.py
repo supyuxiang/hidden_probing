@@ -13,6 +13,7 @@ import json
 import sys
 from pathlib import Path
 import re
+import torch
 
 from tqdm import tqdm
 import torch
@@ -163,15 +164,15 @@ def save_rewards(rewards:torch.Tensor,save_path:str|Path):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--judge_model", type=str, default="/root/autodl-tmp/models/Qwen2.5-7B-Instruct")
-    p.add_argument("--save_path", type=str, default="/root/autodl-tmp/exp1_math/judge/reward_math.pt")
-    p.add_argument("--data_path", type=str, default='/root/hidden_prob/exp1_math/sampled/Qwen2.5-3B-Instruct/res_math.json')
+    p.add_argument("--judge_model", type=str, default="/root/autodl-tmp/models/Qwen2.5-14B-Instruct")
+    p.add_argument("--save_path", type=str, default="/root/autodl-tmp/exp1_math/judge/reward_math_test_en_n8_t1.5_tokens1024.pt")
+    p.add_argument("--data_path", type=str, default='/root/hidden_prob/exp1_math/sampled/Qwen2.5-3B-Instruct/res_math_test_en_n8_t1.5_tokens1024.json')
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    llm = LLM(model=args.judge_model, tensor_parallel_size=1, gpu_memory_utilization=0.9)
+    llm = LLM(model=args.judge_model, tensor_parallel_size=torch.cuda.device_count(), gpu_memory_utilization=0.9)
     tokenizer = AutoTokenizer.from_pretrained(args.judge_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
