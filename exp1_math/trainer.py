@@ -2,6 +2,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
+import random
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -38,6 +40,7 @@ class Trainer:
         config,
     ):
         self.config = config
+        # set_seed(self.config.seed)
         self.generator = torch.Generator().manual_seed(self.config.seed)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if self.device.type == 'cpu': print('Using CPU')

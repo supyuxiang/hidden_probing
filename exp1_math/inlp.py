@@ -119,12 +119,20 @@ def train_binary_classifier(
     pos_weight = torch.tensor([n_neg / n_pos], device=device)
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    ds = BinaryLinearDataset(H, y)
-    dl = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    dataset = BinaryLinearDataset(H, y)
+    split_ratio=0.95
+    dataset_train,dataset_test = random_split(
+        dataset,
+        [round(len(dataset) * split_ratio), len(dataset) - round(len(dataset) * split_ratio)]
+    )
+    dataloader_train = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    dataloader_test = DataLoader(dataset_test, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
     model.train()
     for _ in range(epochs):
-        for batch_hs, batch_y in dl:
+        for batch_hs, batch_y in dataloader_train:
+            batch_hs = batch_hs.to(device)
+            batch_y = batch_y.to(device)
             logits = model(batch_hs)
             loss = loss_fn(logits, batch_y)
             optimizer.zero_grad()
@@ -132,9 +140,16 @@ def train_binary_classifier(
             optimizer.step()
 
     model.eval()
+    acc_test = 0.0
     with torch.no_grad():
-        acc = ((torch.sigmoid(model(H)) >= 0.5).float() == y).float().mean().item()
-    return model, acc
+        for batch_hs, batch_y in dataloader_test:
+            batch_hs = batch_hs.to(device)
+            batch_y = batch_y.to(device)
+            logits = model(batch_hs)
+            acc = ((torch.sigmoid(logits) >= 0.5).float() == batch_y).float().mean().item()
+            acc_test += acc
+    acc_test /= len(dataloader_test)
+    return model, acc_test
 
 
 def nullspace_projection(w: torch.Tensor) -> torch.Tensor:
