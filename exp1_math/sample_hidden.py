@@ -185,6 +185,8 @@ def save_hs(total_hs:dict[int,torch.Tensor],save_path:str | Path):
     torch.save(total_hs,save_path)
 
 def load_data(data_path:str | Path):
+    data_path = Path(data_path)
+    data_path.parent.mkdir(exist_ok=True,parents=True)
     with open(data_path,'r',encoding='utf-8') as f:
         data_ls = json.load(f)
     return data_ls

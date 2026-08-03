@@ -248,10 +248,12 @@ class Runner:
 
     def inlp(self):
         self.H = self.H.to(self.device)
+        self.H_history.append(self.H.clone().detach().cpu())
         self.y = self.y.to(self.device)
         n,d = self.H.shape
         chance_acc = max((self.y == 1).float().mean().item(), (self.y == 0).float().mean().item())
         P_perp = torch.eye(d, device=self.device, dtype=self.H.dtype)
+        self.P_history.append(P_perp.clone().detach().cpu())
         P_lang_rows: list[torch.Tensor] = []
         accs: list[float] = []
         H_cur = self.H.clone()
@@ -264,6 +266,8 @@ class Runner:
                     print(f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) '
                           f'-> converged, stop')
                 break
+            self.H_history.append(H_cur.clone().detach().cpu())
+            self.P_history.append(P_perp.clone().detach().cpu())
             w = clf.weight_vector().to(self.device)
             P_t = self.nullspace_projection(w).to(self.device)
             H_cur = H_cur @ P_t
@@ -275,11 +279,10 @@ class Runner:
         P_lang = torch.stack(P_lang_rows, dim=0) if P_lang_rows else torch.empty((0, d))
         return H_cur, P_perp, P_lang, accs
 
+
     def run(self):
         pass
     
-    def run_single(self):
-        pass
     
 
 
