@@ -2,7 +2,7 @@
 Smoke test: translate 10 math questions into Chinese with Qwen2.5-14B-Instruct.
 
 Usage:
-    CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/smoke_translate.py \
+    CUDA_VISIBLE_DEVICES=0,1 python /root/hidden_prob/exp1_math/smoke_translate.py \
         --model_path /root/autodl-tmp/models/Qwen2.5-14B-Instruct \
         --data_path /root/hidden_prob/data/math/train.json \
         --n 10
@@ -17,7 +17,7 @@ import torch
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from exp1_math.translate import (
