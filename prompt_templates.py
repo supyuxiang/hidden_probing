@@ -29,14 +29,19 @@ Please directly output the function call(s) to solve the task without any other 
 
 # actor4math
 system_prompt4math = 'You are a math expert.'
-user_prompt4math = 'CRITICAL RULE: All outputs MUST be written exclusively in English.'
-                'Please solve the given math problem step by step and present the answer in the following format: "\\boxed{{X}}", where X is the answer.'
-                '\n\nQuestion:\n{question}'
+user_prompt4math = (
+    'Please solve the given math problem step by step and present the answer in the following format: "\\boxed{{X}}", where X is the answer.'
+    '\n\nQuestion:\n{question}'
+)
 
 # judge4math
 system_prompt4judge = 'You are a math expert.'
 user_prompt4judge = (
-    'Please solve the given math problem step by step and present the answer in the following format: "\\boxed{{X}}", where X is the answer.'
-    '\n\nQuestion:\n{question}'
+    'I have a full chain-of-thought solution to a math problem that needs verification.'
+    'Please read the entire reasoning process and final conclusion, then decide whether the'
+    'solution is correct. Ignore minor formatting issues or missing units if the math is correct.'
+    'Correct answer: {answer}\n\n'
+    'Solution:{res}\n\n'
+    'Just answer in one word: "Correct" or "Incorrect", no other words.'
 )
 #
