@@ -83,7 +83,7 @@ def main():
             {'role':'user','content':user_prompt4translate.replace('{target_language}',args.target_language).replace('{text}',q)}
         ]
         formatted.append(
-            tokenizer.apply_chat_template(msg, tokenize=False, add_generation_token=True)
+            tokenizer.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
         )
     
     o = llm.generate(formatted,sampling_params=sp)

@@ -1,5 +1,13 @@
 
 
+# OUTPUT_LANG = {
+#         'en': 'English',
+#         'zh': 'Simplified Chinese',
+#         'es': 'Spanish',
+#         'vi': 'Vietnamese',
+#         'tr': 'Turkish',
+#     }
+
 class Language:
     def __init__(
         self,
@@ -65,3 +73,5 @@ class Language:
         else:
             raise NotImplementedError
     
+
+
