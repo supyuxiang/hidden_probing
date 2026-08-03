@@ -183,12 +183,7 @@ def main():
         )
     
     o = llm.generate(formatted,sampling_params=sp)
-    trans = []
-    for i in range(len(question_ls)):
-        raw_trans = o[i].outputs[0].text
-        trans.append(
-            extract_trans(raw_trans)
-        )
+    trans = [o[i].outputs[0].text.strip() for i in range(len(question_ls))]
     
     out = [{'question': t, 'answer': item['answer']} for t, item in zip(trans, data)]
     with open(args.save_path,'w',encoding='utf-8') as f:
