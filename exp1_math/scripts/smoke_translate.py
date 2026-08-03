@@ -2,7 +2,7 @@
 Smoke test: translate 10 math questions into Chinese with Qwen2.5-14B-Instruct.
 
 Usage:
-    CUDA_VISIBLE_DEVICES=0,1 python /root/hidden_prob/exp1_math/smoke_translate.py \
+    CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/scripts/smoke_translate.py \
         --model_path /root/autodl-tmp/models/Qwen2.5-14B-Instruct \
         --data_path /root/hidden_prob/data/math/train.json \
         --n 10
@@ -26,7 +26,6 @@ from exp1_math.translate import (
     format_few_shot,
     few_shot,
     mapping_language,
-    extract_trans,
 )
 
 
@@ -92,10 +91,9 @@ def main():
     print(f'\n===== {args.target_language} translation smoke test ({len(question_ls)} items) =====\n')
     for i, (q, out) in enumerate(zip(question_ls, outputs)):
         raw = out.outputs[0].text
-        trans = extract_trans(raw)
         print(f'--- [{i + 1}] ---')
         print(f'[EN] {q}')
-        print(f'[{args.target_language.upper()}] {trans}')
+        print(f'[RAW] {raw}')
         print()
 
 
