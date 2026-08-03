@@ -28,6 +28,8 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 
+from torch.utils.data import Dataset, DataLoader, random_split
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -55,6 +57,33 @@ class BinaryLinearClassifier(nn.Module):
         return self.linear.weight.numel() + self.linear.bias.numel()
 
 
+class BinaryLinearDataset(Dataset):
+    def __init__(
+        self,
+        hs:torch.Tensor,
+        y:torch.Tensor,
+    ):
+        super(BinaryLinearDataset,self).__init__()
+        self.hs = hs
+        self.y = y
+        assert len(hs) == len(y)
+    
+    def __len__(self):
+        return len(self.y)
+    
+    def __getitem__(self,idx:int):
+        return self.hs[idx],self.y[idx]
+    
+
+def collate_fn(batch:list[tuple[torch.Tensor,torch.Tensor]]):
+    batch_hs,batch_y=[],[]
+    for item in batch:
+        batch_hs.append(item[0])
+        batch_y.append(item[1])
+    return torch.stack(batch_hs,dim=0),torch.stack(batch_y,dim=0)
+
+
+
 def train_binary_classifier(
     H: torch.Tensor,
     y: torch.Tensor,
@@ -62,19 +91,22 @@ def train_binary_classifier(
     epochs: int = 50,
     lr: float = 1e-2,
     weight_decay: float = 0.0,
-    # device: torch.device | str = 'cpu',
+    batch_size: int = 64,
+    device: torch.device | str = 'cpu',
 ) -> tuple[BinaryLinearClassifier, float]:
     """
     Train one binary linear classifier (BCE) on H -> y, using BCEWithLogitsLoss and AdamW optimizer.
     return (model, train acc)
 
-    H (hidden states): n,d 
+    H (hidden states): n,d
     y (labels): n
-    where d is input_dim, n is the number of samples
+    where d is input_dim, n is the number of samples.
+    Training runs in mini-batches of `batch_size` to avoid OOM on large N.
     """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    if device.type=='cpu': print('using cpu')
-    
+    device = torch.device(device) if not isinstance(device, torch.device) else device
+    if device.type == 'cpu':
+        print('using cpu')
+
     H = H.to(device).float()
     y = y.to(device).float()
 
@@ -87,13 +119,17 @@ def train_binary_classifier(
     pos_weight = torch.tensor([n_neg / n_pos], device=device)
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
+    ds = BinaryLinearDataset(H, y)
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+
     model.train()
     for _ in range(epochs):
-        logits = model(H) # (n,)
-        loss = loss_fn(logits, y)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        for batch_hs, batch_y in dl:
+            logits = model(batch_hs)
+            loss = loss_fn(logits, batch_y)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
     model.eval()
     with torch.no_grad():
@@ -128,6 +164,7 @@ def inlp(
     lr: float = 1e-2,
     weight_decay: float = 0.0,
     chance_tol: float = 0.02,
+    batch_size: int = 64,
     # device: torch.device | str | None = None,
     verbose: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[float]]:
@@ -168,7 +205,8 @@ def inlp(
         # 1. train a linear classifier on the current (already-projected) H
         clf, acc = train_binary_classifier(
             H_cur, y, input_dim=d,
-            epochs=epochs_per_iter, lr=lr, weight_decay=weight_decay, device=device,
+            epochs=epochs_per_iter, lr=lr, weight_decay=weight_decay,
+            batch_size=batch_size, device=device,
         )
         accs.append(acc)
 
@@ -212,6 +250,7 @@ class Runner:
         lr:float=1e-3,
         weight_decay:float=0.0,
         chance_tol:float=0.02,
+        batch_size:int=64,
         verbose:bool=True,
     ):
         self.H = H
@@ -221,6 +260,7 @@ class Runner:
         self.lr = lr
         self.weight_decay = weight_decay
         self.chance_tol = chance_tol
+        self.batch_size = batch_size
         self.verbose = verbose
     
     def run_single(self):
@@ -232,6 +272,7 @@ class Runner:
             lr=self.lr,
             weight_decay=self.weight_decay,
             chance_tol=self.chance_tol,
+            batch_size=self.batch_size,
             verbose=self.verbose,
         )
         print(f'\nINLP iters run: {len(accs)}')
