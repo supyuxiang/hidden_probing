@@ -34,6 +34,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if device.type == 'cpu': print('using cpu')
+
+
 class BinaryLinearClassifier(nn.Module):
     """Single-layer logistic regression: logit = H @ w + b (w is the protected direction)."""
 
@@ -44,14 +48,17 @@ class BinaryLinearClassifier(nn.Module):
 
     def _init_weight(self):
         nn.init.xavier_normal_(self.linear.weight)
-        nn.init.zeros_(self.linear.bias)
+        if self.linear.bias is not None:
+            nn.init.zeros_(self.linear.bias)
 
     def forward(self, H: torch.Tensor) -> torch.Tensor:
         # H: n,d
-        return self.linear(H).squeeze(-1)  # (n,1) -> (n,)
+        # return self.linear(H).squeeze(-1)  # (n,1) -> (n,)
+        return self.linear(H) # (n,1)
 
     def weight_vector(self) -> torch.Tensor:
-        return self.linear.weight.detach().squeeze(0)  # (d,)
+        # return self.linear.weight.detach().squeeze(0)  # (d,)
+        return self.linear.weight.detach() # (d,1)
     
     def count_params(self) -> int:
         return self.linear.weight.numel() + self.linear.bias.numel()
@@ -64,12 +71,12 @@ class BinaryLinearDataset(Dataset):
         y:torch.Tensor,
     ):
         super(BinaryLinearDataset,self).__init__()
-        self.hs = hs
-        self.y = y
-        assert len(hs) == len(y)
+        self.hs = hs.contiguous().view(hs.shape[0],-1)
+        self.y = y.contiguous().view(-1,1)
+        assert self.hs.shape[0] == self.y.shape[0]
     
     def __len__(self):
-        return len(self.y)
+        return self.y.shape[0]
     
     def __getitem__(self,idx:int):
         return self.hs[idx],self.y[idx]
@@ -92,7 +99,6 @@ def train_binary_classifier(
     lr: float = 1e-2,
     weight_decay: float = 0.0,
     batch_size: int = 64,
-    device: torch.device | str = 'cpu',
 ) -> tuple[BinaryLinearClassifier, float]:
     """
     Train one binary linear classifier (BCE) on H -> y, using BCEWithLogitsLoss and AdamW optimizer.
@@ -103,9 +109,6 @@ def train_binary_classifier(
     where d is input_dim, n is the number of samples.
     Training runs in mini-batches of `batch_size` to avoid OOM on large N.
     """
-    device = torch.device(device) if not isinstance(device, torch.device) else device
-    if device.type == 'cpu':
-        print('using cpu')
 
     H = H.to(device).float()
     y = y.to(device).float()
@@ -160,15 +163,11 @@ def nullspace_projection(w: torch.Tensor) -> torch.Tensor:
     P: (d, d)
     where d is the dimension of the hidden states
     """
-    w = w.float()
-    d = w.shape[0]
-    norm_sq = (w @ w).clamp_min(1e-12)
-    return torch.eye(d, dtype=w.dtype, device=w.device) - torch.outer(w, w) / norm_sq
+    w = w.float().contiguous().view(-1,1)
+    d = w.shape[1]
+    norm_sq = (w.T @ w).clamp_min(1e-12)
+    return torch.eye(d, dtype=w.dtype, device=w.device) - w @ w.T / norm_sq
 
-
-def one_vs_rest_labels(language_ids: torch.Tensor, target: int) -> torch.Tensor:
-    """Build binary 0/1 labels: 1 where language_ids == target, else 0."""
-    return (language_ids == target).long()
 
 
 def inlp(
@@ -180,7 +179,6 @@ def inlp(
     weight_decay: float = 0.0,
     chance_tol: float = 0.02,
     batch_size: int = 64,
-    # device: torch.device | str | None = None,
     verbose: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[float]]:
     """
@@ -193,7 +191,6 @@ def inlp(
         epochs_per_iter: epochs to train each per-iteration classifier.
         lr / weight_decay: optimizer args for the per-iteration classifier.
         chance_tol: stop when clf acc <= chance_acc + chance_tol.
-        device: where to run. Defaults to H's device.
         verbose: print per-iteration accuracy.
 
     Returns:
@@ -202,9 +199,6 @@ def inlp(
         P_lang : (k, d) stacked removed direction vectors w_i.
         accs   : list[float] per-iteration classifier accuracy.
     """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    if device.type=='cpu': print('using cpu')
-    
     H = H.to(device).float()
     y = y.to(device).long()
 
@@ -220,8 +214,7 @@ def inlp(
         # 1. train a linear classifier on the current (already-projected) H
         clf, acc = train_binary_classifier(
             H_cur, y, input_dim=d,
-            epochs=epochs_per_iter, lr=lr, weight_decay=weight_decay,
-            batch_size=batch_size, device=device,
+            epochs=epochs_per_iter, lr=lr, weight_decay=weight_decay, batch_size=batch_size
         )
         accs.append(acc)
 
@@ -249,12 +242,6 @@ def inlp(
     return H_cur, P_perp, P_lang, accs
 
 
-def project(H: torch.Tensor, P: torch.Tensor) -> torch.Tensor:
-    """Apply a (cumulative) projection matrix to hidden states: H @ P."""
-    return H.float() @ P.to(H.device).float()
-
-
-
 class Runner:
     def __init__(
         self,
@@ -267,6 +254,7 @@ class Runner:
         chance_tol:float=0.02,
         batch_size:int=64,
         verbose:bool=True,
+        split_ratio:float=0.95,
     ):
         self.H = H
         self.y = y
@@ -277,6 +265,73 @@ class Runner:
         self.chance_tol = chance_tol
         self.batch_size = batch_size
         self.verbose = verbose
+        self.split_ratio = split_ratio
+
+        self.train_size = round(len(y) * split_ratio)
+        self.test_size = len(y) - self.train_size
+
+        self.generator = torch.Generator().manual_seed(42)
+        self.device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if self.device.type == 'cpu': print('using cpu')
+
+        self.build_classification_dataloader()
+        self.build_classifier()
+        self.build_optimizer()
+        self.build_scheduler()
+        self.build_loss_fn()
+
+
+    def build_classification_dataloader(self):
+        self.dataset = BinaryLinearDataset(self.H,self.y)
+        self.dataset_train,self.dataset_test = random_split(
+            self.dataset,
+            [self.train_size,self.test_size],
+            generator=self.generator
+        )
+        self.dataloader_train = DataLoader(
+            self.dataset_train,
+            batch_size=self.batch_size,
+            shuffle=True,
+            collate_fn=collate_fn,
+            generator=self.generator,
+        )
+        self.dataloader_test = DataLoader(
+            self.dataset_test,
+            batch_size=self.batch_size,
+            shuffle=False,
+            collate_fn=collate_fn,
+            generator=self.generator,
+        )
+
+    def build_classifier(self):
+        self.classifier = BinaryLinearClassifier(
+            input_dim=self.H.shape[1],
+        ).to(self.device)
+        self.trainable_params = [p for p in self.classifier.parameters() if p.requires_grad]
+    
+    def build_optimizer(self):
+        self.optimizer = AdamW(
+            self.trainable_params,
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+        )
+    
+    def build_scheduler(self):
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer,
+            T_max=self.epochs_per_iter,
+            eta_min=0.0,
+            last_epoch=-1,
+        )
+
+    def build_loss_fn(self):
+        self.n_pos = (self.y == 1).sum().clamp(min=1)
+        self.n_neg = (self.y == 0).sum().clamp(min=1)
+        self.pos_weight = torch.tensor([self.n_neg / self.n_pos],device=self.device)
+        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        
     
     def run_single(self):
         H_proj, P_perp, P_lang, accs = inlp(
@@ -338,5 +393,15 @@ def main():
     print(f'removed directions: {P_lang.shape[0]} (d={d})')
 
 
+
+def test():
+    model = BinaryLinearClassifier(
+        input_dim=2048,
+    )
+    breakpoint()
+
+
+
 if __name__ == '__main__':
-    main()
+    # main()
+    test()
