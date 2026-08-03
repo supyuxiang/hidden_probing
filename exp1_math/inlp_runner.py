@@ -267,14 +267,6 @@ class Runner:
         self.P_history = [P_perp.clone().detach().cpu()]
         return P_perp
 
-    # stop when the classifier accuracy falls to chance + chance_tolerance
-    def is_converged(self, acc: float, chance_acc: float) -> bool:
-        return acc <= chance_acc + self.chance_tolerance
-
-    def record_iteration(self, H_cur: torch.Tensor, P_perp: torch.Tensor):
-        self.H_history.append(H_cur.clone().detach().cpu())
-        self.P_history.append(P_perp.clone().detach().cpu())
-
     def remove_direction(
         self, w: torch.Tensor, H_cur: torch.Tensor, P_perp: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -282,31 +274,13 @@ class Runner:
         P_t = self.nullspace_projection(w).to(self.device)
         return H_cur @ P_t, P_perp @ P_t
 
-    @staticmethod
-    def stack_directions(rows: list[torch.Tensor], d: int) -> torch.Tensor:
-        return torch.stack(rows, dim=0) if rows else torch.empty((0, d))
 
-    def log_converged(self, t: int, acc: float, chance_acc: float):
-        if not self.verbose:
-            return
-        print(f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) '
-              f'-> converged, stop')
-
-    def log_iteration(self, t: int, acc: float, chance_acc: float, n_removed: int):
-        if not self.verbose:
-            return
-        print(f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) | '
-              f'removed {n_removed} dir(s)')
-
-    # ------------------------------------------------------------------
-    # INLP main loop
-    # ------------------------------------------------------------------
     def inlp(self):
         self.H = self.H.to(self.device).contiguous().view(self.H.shape[0], -1) # (n, d)
         self.y = self.y.to(self.device).contiguous().view(-1, 1) # (n, 1)
         chance_acc = self.chance_accuracy()
         P_perp = self._init_projection()
-        d = self.H.shape[1]
+        d = self.H.shape[1] # d
 
         P_lang_rows: list[torch.Tensor] = []
         accs: list[float] = []
@@ -318,19 +292,24 @@ class Runner:
             accs.append(acc)
 
             # 2. stop if the classifier is already at chance + chance_tolerance (no more linear signal)
-            if self.is_converged(acc, chance_acc):
-                self.log_converged(t, acc, chance_acc)
+            if acc <= chance_acc + self.chance_tolerance:
+                if self.verbose:
+                    print(f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) '
+                          f'-> converged, stop')
                 break
 
             # 3. record state, then remove the classifier's weight direction
-            self.record_iteration(H_cur, P_perp)
+            self.H_history.append(H_cur.clone().detach().cpu())
+            self.P_history.append(P_perp.clone().detach().cpu())
             w = self.classifier.weight_vector().to(self.device)
             H_cur, P_perp = self.remove_direction(w, H_cur, P_perp)
             P_lang_rows.append(w.detach().cpu())
-            self.log_iteration(t, acc, chance_acc, len(P_lang_rows))
+            if self.verbose:
+                print(f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) '
+                      f'-> remove direction {w.shape[0]}')
 
-        P_lang = self.stack_directions(P_lang_rows, d)
-        return H_cur, P_perp, P_lang, accs
+        P_lang = torch.stack(P_lang_rows, dim=0) if P_lang_rows else torch.empty((0, d)) # (k, d)
+        return H_cur, P_perp, P_lang, accs # (n, d), (d, d), (k, d), list[float]
 
 
     def fresh_probe_accuracy(self, H_proj: torch.Tensor) -> float:
