@@ -252,11 +252,6 @@ class Runner:
     # ------------------------------------------------------------------
     # INLP helpers
     # ------------------------------------------------------------------
-    def _prepare_inputs(self):
-        """Move H, y to device and flatten to (n, d) / (n, 1)."""
-        self.H = self.H.to(self.device).contiguous().view(self.H.shape[0], -1)
-        self.y = self.y.to(self.device).contiguous().view(-1, 1)
-
     def _chance_accuracy(self) -> float:
         """Majority-class accuracy (the INLP convergence target)."""
         return max(
@@ -266,7 +261,7 @@ class Runner:
 
     def _init_projection(self) -> torch.Tensor:
         """Reset histories and return the identity projection P_perp = I_d."""
-        d = self.H.shape[1]
+        d = self.H.shape[1] # d
         P_perp = torch.eye(d, device=self.device, dtype=self.H.dtype)
         self.H_history = [self.H.clone().detach().cpu()]
         self.P_history = [P_perp.clone().detach().cpu()]
@@ -306,7 +301,8 @@ class Runner:
     # INLP main loop
     # ------------------------------------------------------------------
     def inlp(self):
-        self._prepare_inputs()
+        self.H = self.H.to(self.device).contiguous().view(self.H.shape[0], -1) # (n, d)
+        self.y = self.y.to(self.device).contiguous().view(-1, 1) # (n, 1)
         chance_acc = self._chance_accuracy()
         P_perp = self._init_projection()
         d = self.H.shape[1]
