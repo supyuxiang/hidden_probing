@@ -122,8 +122,8 @@ def main():
     )
     sp = SamplingParams(
         temperature=args.temperature,
-        top_k=args.topk,
-        top_p=args.topp,
+        top_k=args.top_k,
+        top_p=args.top_p,
         max_tokens=args.max_tokens,
         n=args.n,
     )

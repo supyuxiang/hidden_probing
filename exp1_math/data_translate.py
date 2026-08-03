@@ -94,8 +94,9 @@ def main():
             extract_trans(raw_trans)
         )
     
+    out = [{'question': t, 'answer': item['answer']} for t, item in zip(trans, data)]
     with open(args.save_path,'w',encoding='utf-8') as f:
-        json.dump(trans,f)
+        json.dump(out,f,ensure_ascii=False,indent=2)
     
 
 if __name__ == '__main__':
