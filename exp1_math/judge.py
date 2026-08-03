@@ -88,13 +88,56 @@ def judge_math_api(
     answer_ls:list[str],
     base_url:str,
     api_key:str,
+    model:str='gpt-4o-mini',
+    max_tokens:int=20,
+    temperature:float=0.0,
+    max_workers:int=8,
 ) -> tuple[list[bool], torch.Tensor]:
-    from openai import Openai
-    client = Openai(
+    from openai import OpenAI
+    client = OpenAI(
         base_url=base_url,
         api_key=api_key,
     )
-    pass
+
+    def _judge_one(res:str, answer:str) -> bool:
+        messages = [
+            {"role":"system","content":system_prompt4judge},
+            {"role":"user","content":user_prompt4judge.replace('{answer}',answer).replace('{res}',res)},
+        ]
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        text = (resp.choices[0].message.content or '').lower().strip()
+        matches = re.findall(r'incorrect|correct', text)
+        if not matches:
+            raise ValueError(f"Strange Verify Result: {text!r}")
+        # take the last verdict (matches judge_math's behavior on multi-match)
+        return matches[-1] == 'correct'
+
+    n = len(res_ls)
+    judge_results:list[bool] = [False] * n
+    pairs = list(zip(res_ls, answer_ls))
+
+    if max_workers and max_workers > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            future_to_idx = {
+                ex.submit(_judge_one, res, ans): i for i, (res, ans) in enumerate(pairs)
+            }
+            for fut in tqdm(as_completed(future_to_idx), total=len(future_to_idx), desc='judging (api)'):
+                judge_results[future_to_idx[fut]] = fut.result()
+    else:
+        for i, (res, ans) in enumerate(tqdm(pairs, desc='judging (api)')):
+            judge_results[i] = _judge_one(res, ans)
+
+    rewards = torch.Tensor(
+        [int(b) for b in judge_results]
+    ).view(-1, 1)  # total, 1
+
+    return judge_results, rewards
     
     
 
