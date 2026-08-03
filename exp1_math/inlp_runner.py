@@ -375,8 +375,7 @@ def load_labels(path: str | Path) -> torch.Tensor:
 
 def set_args():
     p = argparse.ArgumentParser(
-        description='Run INLP to remove language-predictive directions from hidden states '
-                    '(paper Sec. 3.2, Eq. 2).',
+        description='Run INLP to remove language-predictive directions from hidden states.'
     )
     # data
     p.add_argument('--hiddens_path', type=str, required=True,
