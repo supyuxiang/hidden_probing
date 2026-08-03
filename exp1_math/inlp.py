@@ -37,15 +37,22 @@ class BinaryLinearClassifier(nn.Module):
 
     def __init__(self, input_dim: int):
         super().__init__()
-        self.linear = nn.Linear(input_dim, 1)
+        self.linear = nn.Linear(input_dim, 1) # weight shape: d,1, bias: 1
+        self._init_weight()
+
+    def _init_weight(self):
         nn.init.xavier_normal_(self.linear.weight)
         nn.init.zeros_(self.linear.bias)
 
     def forward(self, H: torch.Tensor) -> torch.Tensor:
-        return self.linear(H).squeeze(-1)  # (n,)
+        # H: n,d
+        return self.linear(H).squeeze(-1)  # (n,1) -> (n,)
 
     def weight_vector(self) -> torch.Tensor:
         return self.linear.weight.detach().squeeze(0)  # (d,)
+    
+    def count_params(self) -> int:
+        return self.linear.weight.numel() + self.linear.bias.numel()
 
 
 def train_binary_classifier(
@@ -55,9 +62,19 @@ def train_binary_classifier(
     epochs: int = 50,
     lr: float = 1e-2,
     weight_decay: float = 0.0,
-    device: torch.device | str = 'cpu',
+    # device: torch.device | str = 'cpu',
 ) -> tuple[BinaryLinearClassifier, float]:
-    """Train one binary linear classifier (BCE) on H -> y; return (model, train acc)."""
+    """
+    Train one binary linear classifier (BCE) on H -> y, using BCEWithLogitsLoss and AdamW optimizer.
+    return (model, train acc)
+
+    H (hidden states): n,d 
+    y (labels): n
+    where d is input_dim, n is the number of samples
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device.type=='cpu': print('using cpu')
+    
     H = H.to(device).float()
     y = y.to(device).float()
 
@@ -72,7 +89,7 @@ def train_binary_classifier(
 
     model.train()
     for _ in range(epochs):
-        logits = model(H)
+        logits = model(H) # (n,)
         loss = loss_fn(logits, y)
         optimizer.zero_grad()
         loss.backward()
@@ -86,8 +103,11 @@ def train_binary_classifier(
 
 def nullspace_projection(w: torch.Tensor) -> torch.Tensor:
     """
-    Eq. 2: P = I - w w^T / ||w||^2.
+    Eq. 2: P = I - w w^T / ||w||^2, where w is the weight vector of the classifier.
     Rank-1 projection onto the subspace orthogonal to the direction w.
+    w: (d,)
+    P: (d, d)
+    where d is the dimension of the hidden states
     """
     w = w.float()
     d = w.shape[0]
@@ -179,6 +199,61 @@ def inlp(
 def project(H: torch.Tensor, P: torch.Tensor) -> torch.Tensor:
     """Apply a (cumulative) projection matrix to hidden states: H @ P."""
     return H.float() @ P.to(H.device).float()
+
+
+
+class Runner:
+    def __init__(
+        self,
+        H:torch.Tensor,
+        y:torch.Tensor,
+        T:int=30,
+        epochs_per_iter:int=50,
+        lr:float=1e-3,
+        weight_decay:float=0.0,
+        chance_tol:float=0.02,
+        verbose:bool=True,
+    ):
+        self.H = H
+        self.y = y
+        self.T = T
+        self.epochs_per_iter = epochs_per_iter
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.chance_tol = chance_tol
+        self.verbose = verbose
+    
+    def run_single(self):
+        H_proj, P_perp, P_lang, accs = inlp(
+            self.H,
+            self.y,
+            T=self.T,
+            epochs_per_iter=self.epochs_per_iter,
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+            chance_tol=self.chance_tol,
+            verbose=self.verbose,
+        )
+        print(f'\nINLP iters run: {len(accs)}')
+        print(f'acc per iter: {[round(a, 4) for a in accs]}')
+        print(f'removed directions: {P_lang.shape[0]} (d={self.H.shape[1]})')
+
+        _, acc_after = train_binary_classifier(
+            H_proj,
+            self.y,
+            input_dim=self.H.shape[1],
+            epochs=self.epochs_per_iter,
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+        )
+        print(f'fresh clf acc after INLP: {acc_after:.4f} (should be near chance=0.5)')
+        return H_proj, P_perp, P_lang, accs, acc_after
+    
+    def run(self):
+        pass
+
+    
+
 
 
 

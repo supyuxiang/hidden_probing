@@ -72,7 +72,7 @@ def sample_res(
         [o2.text for o2 in o1.outputs] for o1 in outputs
     ]
 
-    # fatten_res
+    # flatten_res
     flattened = []
     for i,group in tqdm(enumerate(res)):
         question = question_ls[i]
