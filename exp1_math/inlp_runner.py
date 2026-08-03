@@ -104,7 +104,7 @@ class Runner:
         epochs_per_iter:int=50,
         lr:float=1e-3,
         weight_decay:float=0.0,
-        chance_tol:float=0.02,
+        chance_tolerance:float=0.02, # stop when the classifier accuracy falls to chance + chance_tolerance
         batch_size:int=64,
         verbose:bool=True,
         split_ratio:float=0.95,
@@ -115,7 +115,7 @@ class Runner:
         self.epochs_per_iter = epochs_per_iter
         self.lr = lr
         self.weight_decay = weight_decay
-        self.chance_tol = chance_tol
+        self.chance_tolerance = chance_tolerance
         self.batch_size = batch_size
         self.verbose = verbose
         self.split_ratio = split_ratio
@@ -267,8 +267,9 @@ class Runner:
         self.P_history = [P_perp.clone().detach().cpu()]
         return P_perp
 
-    def _converged(self, acc: float, chance_acc: float) -> bool:
-        return acc <= chance_acc + self.chance_tol
+    # stop when the classifier accuracy falls to chance + chance_tolerance
+    def is_converged(self, acc: float, chance_acc: float) -> bool:
+        return acc <= chance_acc + self.chance_tolerance
 
     def _record_iteration(self, H_cur: torch.Tensor, P_perp: torch.Tensor):
         self.H_history.append(H_cur.clone().detach().cpu())
@@ -285,7 +286,7 @@ class Runner:
     def _stack_directions(rows: list[torch.Tensor], d: int) -> torch.Tensor:
         return torch.stack(rows, dim=0) if rows else torch.empty((0, d))
 
-    def _log_converged(self, t: int, acc: float, chance_acc: float):
+    def log_converged(self, t: int, acc: float, chance_acc: float):
         if not self.verbose:
             return
         print(f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) '
@@ -316,9 +317,9 @@ class Runner:
             _, _, acc = self.train_classifier()
             accs.append(acc)
 
-            # 2. stop if the classifier is already at chance (no more linear signal)
-            if self._converged(acc, chance_acc):
-                self._log_converged(t, acc, chance_acc)
+            # 2. stop if the classifier is already at chance + chance_tolerance (no more linear signal)
+            if self.is_converged(acc, chance_acc):
+                self.log_converged(t, acc, chance_acc)
                 break
 
             # 3. record state, then remove the classifier's weight direction
@@ -367,7 +368,7 @@ class Runner:
     
 
 
-def _parse_layer_indices(arg: str, n_layers: int) -> list[int]:
+def parse_layer_indices(arg: str, n_layers: int) -> list[int]:
     """Resolve --layer_indices: 'all' | '1,2,3' | '5' -> sorted list of layer indices."""
     arg = arg.strip()
     if arg == 'all':
@@ -377,7 +378,7 @@ def _parse_layer_indices(arg: str, n_layers: int) -> list[int]:
     return [int(arg)]
 
 
-def _load_hiddens(path: str | Path) -> dict[int, torch.Tensor]:
+def load_hiddens(path: str | Path) -> dict[int, torch.Tensor]:
     obj = torch.load(path, map_location='cpu', weights_only=True)
     if isinstance(obj, dict):
         return {int(k): v.float() for k, v in obj.items()}
@@ -385,7 +386,7 @@ def _load_hiddens(path: str | Path) -> dict[int, torch.Tensor]:
         raise ValueError
 
 
-def _load_labels(path: str | Path) -> torch.Tensor:
+def load_labels(path: str | Path) -> torch.Tensor:
     obj = torch.load(path, map_location='cpu', weights_only=True)
     if isinstance(obj, torch.Tensor):
         return obj.long().view(-1)
@@ -415,8 +416,8 @@ def set_args():
                    help='epochs to train each per-iteration language classifier.')
     p.add_argument('--lr', type=float, default=1e-3)
     p.add_argument('--weight_decay', type=float, default=0.0)
-    p.add_argument('--chance_tol', type=float, default=0.02,
-                   help='stop when clf acc <= chance_acc + chance_tol.')
+    p.add_argument('--chance_tolerance', type=float, default=0.02,
+                   help='stop when clf acc <= chance_acc + chance_tolerance.')
     p.add_argument('--batch_size', type=int, default=64)
     p.add_argument('--split_ratio', type=float, default=0.95,
                    help='train fraction of the train/test split for the language classifier.')
@@ -438,9 +439,9 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    layers = _load_hiddens(args.hiddens_path)
-    lang_ids = _load_labels(args.label_path)
-    layer_indices = _parse_layer_indices(args.layer_indices, n_layers=len(layers))
+    layers = load_hiddens(args.hiddens_path)
+    lang_ids = load_labels(args.label_path)
+    layer_indices = parse_layer_indices(args.layer_indices, n_layers=len(layers))
 
     # one-vs-rest binary labels for the target language
     y_ovr = (lang_ids == args.target_lang_id).long()
@@ -460,7 +461,7 @@ def main():
             H=H, y=y_ovr.clone(),
             T=args.T, epochs_per_iter=args.epochs_per_iter,
             lr=args.lr, weight_decay=args.weight_decay,
-            chance_tol=args.chance_tol, batch_size=args.batch_size,
+            chance_tolerance=args.chance_tolerance, batch_size=args.batch_size,
             verbose=args.verbose, split_ratio=args.split_ratio,
         )
         # Runner auto-detected device in __init__; honour --device if compatible.
