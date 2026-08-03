@@ -87,11 +87,41 @@ def extract_trans(text):
     return after.strip()
 
 
-# TODO
-def double_check(raw,trans,llm,tokenizer):
+def double_check(raw, trans, llm, tokenizer, target_language='zh'):
+    """
+    Proofread and refine a candidate translation against its source.
+    """
+    
     system_prompt4double_check = 'You are a professional translator and proofreader.'
-    user_prompt4double_check = ''
-    return 
+    user_prompt4double_check = (
+        'You are proofreading a translation from English into {target_language}.\n'
+        'Keep all LaTeX mathematical notation exactly as-is (e.g. inline math, fractions, '
+        'exponents, subscripts, \\boxed); only the natural language should be translated.\n\n'
+        'Source (English):\n{raw}\n\n'
+        'Candidate translation:\n{trans}\n\n'
+        'Check the candidate for: (1) faithfulness to the source, '
+        '(2) LaTeX / math preserved exactly as in the source, '
+        '(3) fluency in {target_language}.\n'
+        'If the candidate is already correct, return it unchanged. '
+        'Output the final translation only, without any explanations or comments.\n\n'
+        'Your output:\n'
+    )
+    content = (
+        user_prompt4double_check
+        .replace('{target_language}', mapping_language(target_language))
+        .replace('{raw}', raw)
+        .replace('{trans}', trans)
+    )
+    msg = [
+        {'role': 'system', 'content': system_prompt4double_check},
+        {'role': 'user', 'content': content},
+    ]
+    prompt = tokenizer.apply_chat_template(
+        msg, tokenize=False, add_generation_prompt=True
+    )
+    sp = SamplingParams(temperature=0.0, max_tokens=4096, top_p=0.95, top_k=50, n=1)
+    out = llm.generate([prompt], sampling_params=sp)[0]
+    return out.outputs[0].text.strip()
 
 
 def set_args():
