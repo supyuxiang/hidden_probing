@@ -1,12 +1,12 @@
 """
 Iterative Null-space Projection (INLP) for removing language-predictive
-directions, following the paper's formulation (Section 3.2, Eq. 2).
+directions.
 
 At each iteration i:
   1. Train a linear classifier w_i to predict a (binary) protected attribute
      from hidden states H (one-vs-rest for a given language).
   2. Project H onto the null space of w_i:
-        P_t      = I - w_i w_i^T / ||w_i||^2          (rank-1, Eq. 2)
+        P_t      = I - w_i w_i^T / ||w_i||^2 
         H_{i+1}  = H_i @ P_t
     H: (n, d)
     P: (d, d)
