@@ -250,9 +250,9 @@ class Runner:
 
 
     # ------------------------------------------------------------------
-    # INLP helpers
+    # For INLP below
     # ------------------------------------------------------------------
-    def _chance_accuracy(self) -> float:
+    def chance_accuracy(self) -> float:
         """Majority-class accuracy (the INLP convergence target)."""
         return max(
             (self.y == 1).float().mean().item(),
@@ -271,11 +271,11 @@ class Runner:
     def is_converged(self, acc: float, chance_acc: float) -> bool:
         return acc <= chance_acc + self.chance_tolerance
 
-    def _record_iteration(self, H_cur: torch.Tensor, P_perp: torch.Tensor):
+    def record_iteration(self, H_cur: torch.Tensor, P_perp: torch.Tensor):
         self.H_history.append(H_cur.clone().detach().cpu())
         self.P_history.append(P_perp.clone().detach().cpu())
 
-    def _remove_direction(
+    def remove_direction(
         self, w: torch.Tensor, H_cur: torch.Tensor, P_perp: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply the rank-1 null-space projection along w and accumulate it."""
@@ -283,7 +283,7 @@ class Runner:
         return H_cur @ P_t, P_perp @ P_t
 
     @staticmethod
-    def _stack_directions(rows: list[torch.Tensor], d: int) -> torch.Tensor:
+    def stack_directions(rows: list[torch.Tensor], d: int) -> torch.Tensor:
         return torch.stack(rows, dim=0) if rows else torch.empty((0, d))
 
     def log_converged(self, t: int, acc: float, chance_acc: float):
@@ -292,7 +292,7 @@ class Runner:
         print(f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) '
               f'-> converged, stop')
 
-    def _log_iteration(self, t: int, acc: float, chance_acc: float, n_removed: int):
+    def log_iteration(self, t: int, acc: float, chance_acc: float, n_removed: int):
         if not self.verbose:
             return
         print(f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) | '
@@ -304,7 +304,7 @@ class Runner:
     def inlp(self):
         self.H = self.H.to(self.device).contiguous().view(self.H.shape[0], -1) # (n, d)
         self.y = self.y.to(self.device).contiguous().view(-1, 1) # (n, 1)
-        chance_acc = self._chance_accuracy()
+        chance_acc = self.chance_accuracy()
         P_perp = self._init_projection()
         d = self.H.shape[1]
 
@@ -323,17 +323,17 @@ class Runner:
                 break
 
             # 3. record state, then remove the classifier's weight direction
-            self._record_iteration(H_cur, P_perp)
+            self.record_iteration(H_cur, P_perp)
             w = self.classifier.weight_vector().to(self.device)
-            H_cur, P_perp = self._remove_direction(w, H_cur, P_perp)
+            H_cur, P_perp = self.remove_direction(w, H_cur, P_perp)
             P_lang_rows.append(w.detach().cpu())
-            self._log_iteration(t, acc, chance_acc, len(P_lang_rows))
+            self.log_iteration(t, acc, chance_acc, len(P_lang_rows))
 
-        P_lang = self._stack_directions(P_lang_rows, d)
+        P_lang = self.stack_directions(P_lang_rows, d)
         return H_cur, P_perp, P_lang, accs
 
 
-    def _fresh_probe_accuracy(self, H_proj: torch.Tensor) -> float:
+    def fresh_probe_accuracy(self, H_proj: torch.Tensor) -> float:
         """Train a fresh linear probe on the projected H to verify language info is gone.
 
         Reuses the build_* pipeline on the projected representations and returns the
@@ -352,14 +352,14 @@ class Runner:
         H_proj, P_perp, P_lang, accs = self.inlp()
 
         # 2. summary of the removal trajectory
-        chance_acc = self._chance_accuracy()
+        chance_acc = self.chance_accuracy()
         print(f'\n[INLP-run] iters run: {len(accs)}')
         print(f'[INLP-run] acc per iter: {[round(a, 4) for a in accs]}')
         print(f'[INLP-run] removed directions: {P_lang.shape[0]} (d={self.H.shape[1]})')
 
         # 3. fresh language probe on the projected H — confirms language info is gone
         #    (paper Sec. 4.2: drop in language classification accuracy after INLP)
-        acc_after = self._fresh_probe_accuracy(H_proj)
+        acc_after = self.fresh_probe_accuracy(H_proj)
         print(f'[INLP-run] fresh clf acc after INLP: {acc_after:.4f} '
               f'(chance={chance_acc:.4f})')
 
