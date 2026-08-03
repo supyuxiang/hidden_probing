@@ -30,7 +30,7 @@ def extract_trans(text):
 
 
 # TODO
-def double_check(raw,trans,llm,):
+def double_check(raw,trans,llm,tokenizer):
     system_prompt4double_check = 'You are a professional translator and proofreader.'
     user_prompt4double_check = ''
     return 

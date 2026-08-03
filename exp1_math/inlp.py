@@ -8,6 +8,9 @@ At each iteration i:
   2. Project H onto the null space of w_i:
         P_t      = I - w_i w_i^T / ||w_i||^2          (rank-1, Eq. 2)
         H_{i+1}  = H_i @ P_t
+    H: (n, d)
+    P: (d, d)
+    w: (d,)
   3. Accumulate P_perp = P_1 @ ... @ P_t  (cumulative orthogonal projection).
 Iterate until the classifier accuracy falls to chance (or T iterations).
 
@@ -29,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
-class _BinaryLinearClassifier(nn.Module):
+class BinaryLinearClassifier(nn.Module):
     """Single-layer logistic regression: logit = H @ w + b (w is the protected direction)."""
 
     def __init__(self, input_dim: int):
@@ -45,7 +48,7 @@ class _BinaryLinearClassifier(nn.Module):
         return self.linear.weight.detach().squeeze(0)  # (d,)
 
 
-def _train_binary_classifier(
+def train_binary_classifier(
     H: torch.Tensor,
     y: torch.Tensor,
     input_dim: int,
@@ -53,13 +56,13 @@ def _train_binary_classifier(
     lr: float = 1e-2,
     weight_decay: float = 0.0,
     device: torch.device | str = 'cpu',
-) -> tuple[_BinaryLinearClassifier, float]:
+) -> tuple[BinaryLinearClassifier, float]:
     """Train one binary linear classifier (BCE) on H -> y; return (model, train acc)."""
     H = H.to(device).float()
     y = y.to(device).float()
 
-    model = _BinaryLinearClassifier(input_dim).to(device)
-    opt = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    model = BinaryLinearClassifier(input_dim).to(device)
+    optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     # class-balanced positive weight so the direction isn't dominated by the majority class
     n_pos = (y == 1).sum().clamp(min=1)
@@ -71,9 +74,9 @@ def _train_binary_classifier(
     for _ in range(epochs):
         logits = model(H)
         loss = loss_fn(logits, y)
-        opt.zero_grad()
+        optimizer.zero_grad()
         loss.backward()
-        opt.step()
+        optimizer.step()
 
     model.eval()
     with torch.no_grad():
@@ -105,7 +108,7 @@ def inlp(
     lr: float = 1e-2,
     weight_decay: float = 0.0,
     chance_tol: float = 0.02,
-    device: torch.device | str | None = None,
+    # device: torch.device | str | None = None,
     verbose: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[float]]:
     """
@@ -127,8 +130,9 @@ def inlp(
         P_lang : (k, d) stacked removed direction vectors w_i.
         accs   : list[float] per-iteration classifier accuracy.
     """
-    if device is None:
-        device = H.device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device.type=='cpu': print('using cpu')
+    
     H = H.to(device).float()
     y = y.to(device).long()
 
@@ -142,7 +146,7 @@ def inlp(
     H_cur = H.clone()
     for t in range(1, T + 1):
         # 1. train a linear classifier on the current (already-projected) H
-        clf, acc = _train_binary_classifier(
+        clf, acc = train_binary_classifier(
             H_cur, y, input_dim=d,
             epochs=epochs_per_iter, lr=lr, weight_decay=weight_decay, device=device,
         )
@@ -177,6 +181,8 @@ def project(H: torch.Tensor, P: torch.Tensor) -> torch.Tensor:
     return H.float() @ P.to(H.device).float()
 
 
+
+
 def main():
     # smoke test: inject a linear language signal, then erase it with INLP
     torch.manual_seed(0)
@@ -191,7 +197,7 @@ def main():
     )
 
     # a fresh classifier should fail to recover y after projection
-    _, acc_after = _train_binary_classifier(
+    _, acc_after = train_binary_classifier(
         H_proj, y, input_dim=d, epochs=80, lr=5e-2,
     )
     print(f'\nINLP iters run: {len(accs)}')
