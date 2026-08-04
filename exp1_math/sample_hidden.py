@@ -186,6 +186,8 @@ def sample_hiddens(
         gc.collect()
         return batch_hs
     
+    # TODO: add more pooling modes?
+    #
 
     total_hs = {
         layer_idx:[]
@@ -217,7 +219,7 @@ def sample_hiddens(
         gc.collect()
         torch.cuda.empty_cache()
 
-    #NOTE 这么写的话，cpu上内存峰值为原来两倍左右
+    #NOTE 原先这么写的话，cpu上内存峰值为原来两倍左右
     # total_hs = {
     #     layer_idx:torch.cat(total_hs[layer_idx],dim=0) # N, hidden_dim
     #     for layer_idx in layer_indices

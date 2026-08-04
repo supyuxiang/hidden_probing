@@ -1,3 +1,5 @@
+# NOTE: old version, don't be used.
+
 """
 Iterative Null-space Projection (INLP) for removing language-predictive
 directions.
