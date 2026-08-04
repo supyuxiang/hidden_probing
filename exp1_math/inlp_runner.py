@@ -701,7 +701,7 @@ def set_args():
     return p.parse_args()
 
 
-def run_inlp_on_layer(
+def run_single_layer(
     H: torch.Tensor,
     y_labels: torch.Tensor,
     rewards: torch.Tensor,
@@ -865,7 +865,7 @@ def main():
             y_labels = (lang_ids == target_id).long() # build 0-1 labels for language classification
             n_pos, n_neg = int((y_labels == 1).sum()), int((y_labels == 0).sum())
             chance_acc = max(n_pos, n_neg) / len(y_labels) # for chance accuracy, as baseline
-            row = run_inlp_on_layer(
+            row = run_single_layer(
                 H=H,
                 y_labels=y_labels,
                 rewards=rewards,
