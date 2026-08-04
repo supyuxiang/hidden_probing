@@ -214,13 +214,20 @@ def sample_hiddens(
         del batch_hs, batch
         if pooling_mode == 'mean':
             del batch_instruction_formatted, batch_question
-        torch.cuda.empty_cache()
         gc.collect()
+        torch.cuda.empty_cache()
 
-    total_hs = {
-        layer_idx:torch.cat(total_hs[layer_idx],dim=0) # N, hidden_dim
-        for layer_idx in layer_indices
-    }
+    #NOTE 这么写的话，cpu上内存峰值为原来两倍左右
+    # total_hs = {
+    #     layer_idx:torch.cat(total_hs[layer_idx],dim=0) # N, hidden_dim
+    #     for layer_idx in layer_indices
+    # }
+    
+    # NOTE： 修改，每层只保存一个batch的hs，而不是所有batch的hs拼接在一起， 内存峰值为原来一倍左右 (1x + 单层大小 << 2x)
+    for layer_idx in layer_indices:
+        cat_hs = torch.cat(total_hs[layer_idx],dim=0) # N, hidden_dim
+        del total_hs[layer_idx]
+        total_hs[layer_idx] = cat_hs
     return total_hs
 
         
