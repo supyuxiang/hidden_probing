@@ -99,7 +99,7 @@ def print_if_verbose(verbose:bool,text:str) -> None:
     if verbose: print(text)
 
 
-class Runner:
+class INLP_Runner:
     def __init__(
         self,
         H: torch.Tensor,
@@ -718,10 +718,10 @@ def run_inlp_on_layer(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(
-        f'\n----- target={target_lang} layer={layer_idx} | '
+        f'\n----- target={target_lang} layer={layer_idx} | ' 
         f'N={len(H)} d={H.shape[1]} | n_pos={n_pos} n_neg={n_neg} -----'
     )
-    runner = Runner(
+    inlp_runner = INLP_Runner(
         H=H,
         y=y_labels.clone(),
         T=args.T,
@@ -735,7 +735,7 @@ def run_inlp_on_layer(
         seed=args.seed,
         device=device,
     )
-    H_proj, P_perp, P_lang, accs, acc_after = runner.run()
+    H_proj, P_perp, P_lang, accs, acc_after = inlp_runner.run()
 
     # --- capability probe (paper Sec 4.2 / Eq. 3 Δcap) ---
     cap_acc_before = float('nan')
@@ -791,9 +791,9 @@ def run_inlp_on_layer(
         out_dir / f'accs_layer{layer_idx}.pt',
     )
 
-    del runner, H_proj
-    torch.cuda.empty_cache()
+    del inlp_runner, H_proj
     gc.collect()
+    torch.cuda.empty_cache()
 
     metrics = {
         'target_lang': target_lang,
