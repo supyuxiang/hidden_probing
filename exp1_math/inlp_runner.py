@@ -6,7 +6,7 @@ At each iteration i:
   1. Train a linear classifier w_i to predict a (binary) protected attribute
      from hidden states H (one-vs-rest for a given language).
   2. Project H onto the null space of w_i:
-        P_t      = I - w_i w_i^T / ||w_i||^2 
+        P_t      = I - w_i w_i^T / ||w_i||^2
         H_{i+1}  = H_i @ P_t
     H: (n, d)
     P: (d, d)
@@ -23,22 +23,21 @@ Returns:
 
 import argparse
 import csv
+import gc
 import sys
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
+from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm import tqdm
-
-from torch.utils.data import Dataset, DataLoader, random_split
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-if device.type == 'cpu': print('using cpu')
+LANG2ID = {'en': 0, 'zh': 1, 'es': 2, 'vi': 3, 'tr': 4}
+ID2LANG = {v: k for k, v in LANG2ID.items()}
 
 
 class BinaryLinearClassifier(nn.Module):
@@ -46,7 +45,7 @@ class BinaryLinearClassifier(nn.Module):
 
     def __init__(self, input_dim: int):
         super().__init__()
-        self.linear = nn.Linear(input_dim, 1) # weight shape: d,1, bias: 1
+        self.linear = nn.Linear(input_dim, 1)  # weight: (1, d), bias: (1,)
         self._init_weight()
 
     def _init_weight(self):
@@ -55,62 +54,149 @@ class BinaryLinearClassifier(nn.Module):
             nn.init.zeros_(self.linear.bias)
 
     def forward(self, H: torch.Tensor) -> torch.Tensor:
-        # H: n,d
-        # return self.linear(H).squeeze(-1)  # (n,1) -> (n,)
-        return self.linear(H) # (n,1)
+        return self.linear(H)  # (n, 1)
 
     def weight_vector(self) -> torch.Tensor:
-        # return self.linear.weight.detach().squeeze(0)  # (d,)
-        return self.linear.weight.detach() # (d,1)
-    
+        """Return the protected direction as a 1-D vector (d,)."""
+        return self.linear.weight.detach().squeeze(0).contiguous()  # (d,)
+
     def count_params(self) -> int:
-        return self.linear.weight.numel() + self.linear.bias.numel()
+        return self.linear.weight.numel() + (
+            self.linear.bias.numel() if self.linear.bias is not None else 0
+        )
 
 
 class BinaryLinearDataset(Dataset):
-    def __init__(
-        self,
-        hs:torch.Tensor,
-        y:torch.Tensor,
-    ):
-        super(BinaryLinearDataset,self).__init__()
-        self.hs = hs.contiguous().view(hs.shape[0],-1)
-        self.y = y.contiguous().view(-1,1)
+    def __init__(self, hs: torch.Tensor, y: torch.Tensor):
+        super().__init__()
+        self.hs = hs.contiguous().view(hs.shape[0], -1)
+        self.y = y.contiguous().view(-1, 1).float()
         assert self.hs.shape[0] == self.y.shape[0]
-    
+
     def __len__(self):
         return self.y.shape[0]
-    
-    def __getitem__(self,idx:int):
-        return self.hs[idx],self.y[idx]
-    
 
-def collate_fn(batch:list[tuple[torch.Tensor,torch.Tensor]]):
-    batch_hs,batch_y=[],[]
-    for item in batch:
-        batch_hs.append(item[0])
-        batch_y.append(item[1])
-    return torch.stack(batch_hs,dim=0),torch.stack(batch_y,dim=0)
+    def __getitem__(self, idx: int):
+        return self.hs[idx], self.y[idx]
 
 
+def collate_fn(batch: list[tuple[torch.Tensor, torch.Tensor]]):
+    batch_hs, batch_y = zip(*batch)
+    return torch.stack(batch_hs, dim=0), torch.stack(batch_y, dim=0)
+
+
+def probe_capability(
+    H: torch.Tensor,
+    rewards: torch.Tensor,
+    *,
+    epochs: int = 50,
+    batch_size: int = 512,
+    lr: float = 1e-3,
+    weight_decay: float = 0.0,
+    split_ratio: float = 0.95,
+    seed: int = 42,
+    device: torch.device | None = None,
+    desc: str = 'cap probe',
+) -> float:
+    """
+    Linear capability probe (same recipe as scan_layers / trainer):
+    BCEWithLogits on reward ∈ {0,1}, AdamW + cosine, return final val accuracy.
+    """
+    device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    H = H.float().contiguous().view(H.shape[0], -1)
+    rewards = rewards.float().contiguous().view(-1, 1)
+    assert H.shape[0] == rewards.shape[0], (H.shape, rewards.shape)
+
+    n = H.shape[0]
+    train_size = max(1, round(n * split_ratio))
+    test_size = max(1, n - train_size)
+    if train_size + test_size > n:
+        train_size = n - test_size
+
+    g = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(n, generator=g)
+    train_idx = perm[:train_size].tolist()
+    test_idx = perm[train_size : train_size + test_size].tolist()
+
+    dataset = BinaryLinearDataset(H, rewards)
+    dl_train = DataLoader(
+        Subset(dataset, train_idx),
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        generator=torch.Generator().manual_seed(seed),
+    )
+    dl_test = DataLoader(
+        Subset(dataset, test_idx),
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+    )
+
+    model = BinaryLinearClassifier(input_dim=H.shape[1]).to(device)
+    opt = AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=lr,
+        weight_decay=weight_decay,
+    )
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=0.0)
+
+    train_rw = rewards[train_idx].view(-1)
+    n_pos = (train_rw == 1).sum().clamp(min=1).float()
+    n_neg = (train_rw == 0).sum().clamp(min=1).float()
+    pos_weight = (n_neg / n_pos).to(device).view(1)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    val_acc = 0.0
+    epoch_bar = tqdm(range(epochs), desc=desc, leave=False, dynamic_ncols=True)
+    for _ in epoch_bar:
+        model.train()
+        for batch_hs, batch_y in dl_train:
+            batch_hs = batch_hs.to(device, non_blocking=True)
+            batch_y = batch_y.to(device, non_blocking=True)
+            logits = model(batch_hs)
+            loss = loss_fn(logits, batch_y)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+        sched.step()
+
+        model.eval()
+        correct = total = 0
+        with torch.no_grad():
+            for batch_hs, batch_y in dl_test:
+                batch_hs = batch_hs.to(device, non_blocking=True)
+                batch_y = batch_y.to(device, non_blocking=True)
+                logits = model(batch_hs)
+                # trainer / scan_layers: threshold logit at 0 (== prob >= 0.5)
+                correct += ((logits >= 0).float() == batch_y).sum().item()
+                total += batch_y.shape[0]
+        val_acc = correct / max(total, 1)
+        epoch_bar.set_postfix(val_acc=f'{val_acc:.4f}', refresh=False)
+
+    return val_acc
 
 
 class Runner:
     def __init__(
         self,
-        H:torch.Tensor,
-        y:torch.Tensor,
-        T:int=30,
-        epochs_per_iter:int=50,
-        lr:float=1e-3,
-        weight_decay:float=0.0,
-        chance_tolerance:float=0.02, # stop when the classifier accuracy falls to chance + chance_tolerance
-        batch_size:int=64,
-        verbose:bool=True,
-        split_ratio:float=0.95,
+        H: torch.Tensor,
+        y: torch.Tensor,
+        T: int = 30,
+        epochs_per_iter: int = 50,
+        lr: float = 1e-3,
+        weight_decay: float = 0.0,
+        chance_tolerance: float = 0.02,
+        batch_size: int = 64,
+        verbose: bool = True,
+        split_ratio: float = 0.95,
+        seed: int = 42,
+        device: torch.device | None = None,
     ):
-        self.H = H
-        self.y = y
+        self.H = H.float().contiguous().view(H.shape[0], -1)
+        self.y = y.long().contiguous().view(-1)
+        assert self.H.shape[0] == self.y.shape[0]
+
         self.T = T
         self.epochs_per_iter = epochs_per_iter
         self.lr = lr
@@ -119,52 +205,64 @@ class Runner:
         self.batch_size = batch_size
         self.verbose = verbose
         self.split_ratio = split_ratio
+        self.seed = seed
 
-        self.train_size = round(len(y) * split_ratio)
-        self.test_size = len(y) - self.train_size
-
-        self.generator = torch.Generator().manual_seed(42)
-        self.device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        if self.device.type == 'cpu': print('using cpu')
-
-        self.H_history = []
-        self.P_history = []
-
-        self.build_classification_dataloader()
-        self.build_classifier()
-        self.build_optimizer()
-        self.build_scheduler()
-        self.build_loss_fn()
-
-
-    def build_classification_dataloader(self):
-        self.dataset = BinaryLinearDataset(self.H,self.y)
-        self.dataset_train,self.dataset_test = random_split(
-            self.dataset,
-            [self.train_size,self.test_size],
-            generator=self.generator
+        self.device = device or torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'
         )
+        if self.device.type == 'cpu':
+            print('using cpu')
+
+        n = len(self.y)
+        self.train_size = max(1, round(n * split_ratio))
+        self.test_size = max(1, n - self.train_size)
+        if self.train_size + self.test_size > n:
+            self.train_size = n - self.test_size
+
+        g = torch.Generator().manual_seed(seed)
+        perm = torch.randperm(n, generator=g)
+        self.train_indices = perm[: self.train_size].tolist()
+        self.test_indices = perm[self.train_size : self.train_size + self.test_size].tolist()
+
+        self.H_history: list[torch.Tensor] = []
+        self.P_history: list[torch.Tensor] = []
+
+        self.build_loss_fn()
+        self._rebuild_for_H(self.H)
+
+    def build_loss_fn(self):
+        n_pos = (self.y == 1).sum().clamp(min=1).float()
+        n_neg = (self.y == 0).sum().clamp(min=1).float()
+        self.pos_weight = (n_neg / n_pos).to(self.device).view(1)
+        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+
+    def _rebuild_for_H(self, H: torch.Tensor):
+        """Point dataloaders at H and re-init a fresh linear classifier + optim."""
+        self.H = H.detach().float().contiguous().view(H.shape[0], -1)
+        self.dataset = BinaryLinearDataset(self.H, self.y.float())
+        self.dataset_train = Subset(self.dataset, self.train_indices)
+        self.dataset_test = Subset(self.dataset, self.test_indices)
         self.dataloader_train = DataLoader(
             self.dataset_train,
             batch_size=self.batch_size,
             shuffle=True,
             collate_fn=collate_fn,
-            generator=self.generator,
+            generator=torch.Generator().manual_seed(self.seed),
         )
         self.dataloader_test = DataLoader(
             self.dataset_test,
             batch_size=self.batch_size,
             shuffle=False,
             collate_fn=collate_fn,
-            generator=self.generator,
         )
+        self.build_classifier()
+        self.build_optimizer()
+        self.build_scheduler()
 
     def build_classifier(self):
-        self.classifier = BinaryLinearClassifier(
-            input_dim=self.H.shape[1],
-        ).to(self.device)
+        self.classifier = BinaryLinearClassifier(input_dim=self.H.shape[1]).to(self.device)
         self.trainable_params = [p for p in self.classifier.parameters() if p.requires_grad]
-    
+
     def build_optimizer(self):
         self.optimizer = AdamW(
             self.trainable_params,
@@ -173,7 +271,7 @@ class Runner:
             betas=(0.9, 0.999),
             eps=1e-8,
         )
-    
+
     def build_scheduler(self):
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer,
@@ -182,229 +280,570 @@ class Runner:
             last_epoch=-1,
         )
 
-    def build_loss_fn(self):
-        self.n_pos = (self.y == 1).sum().clamp(min=1)
-        self.n_neg = (self.y == 0).sum().clamp(min=1)
-        self.pos_weight = torch.tensor([self.n_neg / self.n_pos],device=self.device)
-        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
-    
-    def train_classifier_epoch(self):
+    def train_classifier_epoch(self) -> float:
         self.classifier.train()
         epoch_loss = 0.0
-        bar_train = tqdm(self.dataloader_train,desc='Training Classifier')
-        for batch_hs, batch_y in bar_train:
-            batch_hs = batch_hs.to(self.device)
-            batch_y = batch_y.to(self.device)
+        loader = self.dataloader_train
+        it = loader if not self.verbose else tqdm(loader, desc='Training Classifier', leave=False)
+        for batch_hs, batch_y in it:
+            batch_hs = batch_hs.to(self.device, non_blocking=True)
+            batch_y = batch_y.to(self.device, non_blocking=True)
             logits = self.classifier(batch_hs)
             loss = self.loss_fn(logits, batch_y)
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
             loss.backward()
             self.optimizer.step()
             epoch_loss += loss.item()
-        bar_train.set_postfix(loss=epoch_loss / len(self.dataloader_train))
-        return epoch_loss / len(self.dataloader_train)
-    
-    def train_classifier(self):
-        for epoch in range(self.epochs_per_iter):
+        return epoch_loss / max(len(loader), 1)
+
+    def eval_classifier_epoch(self) -> tuple[float, float]:
+        self.classifier.eval()
+        total_loss = 0.0
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for batch_hs, batch_y in self.dataloader_test:
+                batch_hs = batch_hs.to(self.device, non_blocking=True)
+                batch_y = batch_y.to(self.device, non_blocking=True)
+                logits = self.classifier(batch_hs)
+                loss = self.loss_fn(logits, batch_y)
+                pred = (torch.sigmoid(logits) >= 0.5).float()
+                correct += (pred == batch_y).sum().item()
+                total += batch_y.numel()
+                total_loss += loss.item() * batch_y.shape[0]
+        n = max(total, 1)
+        return total_loss / n, correct / n
+
+    def train_classifier(self, desc: str = 'epochs') -> tuple[float, float, float]:
+        train_loss = val_loss = val_acc = 0.0
+        epoch_bar = tqdm(
+            range(self.epochs_per_iter),
+            desc=desc,
+            leave=False,
+            dynamic_ncols=True,
+        )
+        for _epoch in epoch_bar:
             train_loss = self.train_classifier_epoch()
             self.scheduler.step()
             val_loss, val_acc = self.eval_classifier_epoch()
+            epoch_bar.set_postfix(
+                loss=f'{train_loss:.4f}',
+                val_acc=f'{val_acc:.4f}',
+                refresh=False,
+            )
             if self.verbose:
                 print(
-                    '-'*50,
-                    f'train_loss: {train_loss:.4f}, val_loss: {val_loss:.4f}, val_acc: {val_acc:.4f}',
-                    '-'*50,
+                    f'{"-" * 50} '
+                    f'train_loss: {train_loss:.4f}, val_loss: {val_loss:.4f}, val_acc: {val_acc:.4f} '
+                    f'{"-" * 50}'
                 )
         return train_loss, val_loss, val_acc
-    
-    def eval_classifier_epoch(self):
-        self.classifier.eval()
-        epoch_acc = 0.0
-        epoch_loss = 0.0
-        for batch_hs, batch_y in self.dataloader_test:
-            batch_hs = batch_hs.to(self.device)
-            batch_y = batch_y.to(self.device)
-            with torch.no_grad():
-                logits = self.classifier(batch_hs)
-                loss = self.loss_fn(logits, batch_y)
-                acc = ((torch.sigmoid(logits) >= 0.5).float() == batch_y).float().mean().item()
-                epoch_acc += acc
-                epoch_loss += loss.item()
-        epoch_acc /= len(self.dataloader_test)
-        epoch_loss /= len(self.dataloader_test)
-        return epoch_loss, epoch_acc
 
     @staticmethod
     def nullspace_projection(w: torch.Tensor) -> torch.Tensor:
         """
-        P = I - w w^T / ||w||^2, where w is the weight vector of the classifier.
-        Rank-1 projection onto the subspace orthogonal to the direction w.
-        w: (d,)
-        P: (d, d)
-        where d is the dimension of the hidden states.
+        P = I - w w^T / ||w||^2.
+        w: (d,) or (d, 1)  ->  P: (d, d)
         """
-        w = w.float().contiguous().view(-1,1)
-        d = w.shape[1]
+        w = w.float().contiguous().view(-1, 1)  # (d, 1)
+        d = w.shape[0]
         norm_sq = (w.T @ w).clamp_min(1e-12)
-        return torch.eye(d, dtype=w.dtype, device=w.device) - w @ w.T / norm_sq
+        return torch.eye(d, dtype=w.dtype, device=w.device) - (w @ w.T) / norm_sq
 
-
-    # ------------------------------------------------------------------
-    # For INLP below
-    # ------------------------------------------------------------------
     def chance_accuracy(self) -> float:
         """Majority-class accuracy (the INLP convergence target)."""
-        return max(
-            (self.y == 1).float().mean().item(),
-            (self.y == 0).float().mean().item(),
-        )
+        y = self.y
+        return max((y == 1).float().mean().item(), (y == 0).float().mean().item())
 
     def _init_projection(self) -> torch.Tensor:
-        """Reset histories and return the identity projection P_perp = I_d."""
-        d = self.H.shape[1] # d
-        P_perp = torch.eye(d, device=self.device, dtype=self.H.dtype)
-        self.H_history = [self.H.clone().detach().cpu()]
-        self.P_history = [P_perp.clone().detach().cpu()]
+        d = self.H.shape[1]
+        P_perp = torch.eye(d, dtype=torch.float32)  # keep on CPU; d is small
+        # Do not snapshot full H (n can be 1e5+); only track projection matrices.
+        self.H_history = []
+        self.P_history = [P_perp.clone()]
         return P_perp
 
     def remove_direction(
-        self, w: torch.Tensor, H_cur: torch.Tensor, P_perp: torch.Tensor,
+        self,
+        w: torch.Tensor,
+        H_cur: torch.Tensor,
+        P_perp: torch.Tensor,
+        chunk_size: int = 8192,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Apply the rank-1 null-space projection along w and accumulate it."""
-        P_t = self.nullspace_projection(w).to(self.device)
-        return H_cur @ P_t, P_perp @ P_t
+        """Apply rank-1 null-space projection along w and accumulate into P_perp.
 
+        H is projected in chunks on self.device to avoid holding the full (n, d)
+        matrix on GPU; P_perp (d, d) is updated on device then moved back to CPU.
+        """
+        P_t = self.nullspace_projection(w).to(self.device)
+        n_chunks = (H_cur.shape[0] + chunk_size - 1) // chunk_size
+        pieces: list[torch.Tensor] = []
+        chunk_iter = range(0, H_cur.shape[0], chunk_size)
+        if n_chunks > 4:
+            chunk_iter = tqdm(
+                chunk_iter,
+                total=n_chunks,
+                desc='project H',
+                leave=False,
+                dynamic_ncols=True,
+            )
+        for i in chunk_iter:
+            chunk = H_cur[i : i + chunk_size].to(self.device, non_blocking=True)
+            pieces.append((chunk @ P_t).cpu())
+        H_new = torch.cat(pieces, dim=0)
+        P_perp_new = (P_perp.to(self.device) @ P_t).cpu()
+        return H_new, P_perp_new
 
     def inlp(self):
-        self.H = self.H.to(self.device).contiguous().view(self.H.shape[0], -1) # (n, d)
-        self.y = self.y.to(self.device).contiguous().view(-1, 1) # (n, 1)
+        # Keep large H on CPU; only classifier / P live on self.device.
+        self.H = self.H.cpu().contiguous().view(self.H.shape[0], -1)
+        self.y = self.y.cpu().contiguous().view(-1)
         chance_acc = self.chance_accuracy()
         P_perp = self._init_projection()
-        d = self.H.shape[1] # d
+        d = self.H.shape[1]
 
         P_lang_rows: list[torch.Tensor] = []
         accs: list[float] = []
-        H_cur = self.H.clone()
+        H_cur = self.H  # projected copies are allocated inside remove_direction
 
-        for t in range(1, self.T + 1):
-            # 1. train a linear classifier on the current (already-projected) H
-            _, _, acc = self.train_classifier()
+        iter_bar = tqdm(
+            range(1, self.T + 1),
+            desc='INLP iters',
+            leave=False,
+            dynamic_ncols=True,
+        )
+        for t in iter_bar:
+            # Train on the *current* (already projected) representations.
+            self._rebuild_for_H(H_cur)
+            _, _, acc = self.train_classifier(desc=f'epochs[iter {t}/{self.T}]')
             accs.append(acc)
+            iter_bar.set_postfix(
+                acc=f'{acc:.4f}',
+                chance=f'{chance_acc:.4f}',
+                removed=len(P_lang_rows),
+                refresh=False,
+            )
 
-            # 2. stop if the classifier is already at chance + chance_tolerance (no more linear signal)
             if acc <= chance_acc + self.chance_tolerance:
+                iter_bar.set_postfix(
+                    acc=f'{acc:.4f}',
+                    status='converged',
+                    removed=len(P_lang_rows),
+                    refresh=True,
+                )
                 if self.verbose:
-                    print(f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) '
-                          f'-> converged, stop')
+                    print(
+                        f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} '
+                        f'(chance={chance_acc:.4f}) -> converged, stop'
+                    )
                 break
 
-            # 3. record state, then remove the classifier's weight direction
-            self.H_history.append(H_cur.clone().detach().cpu())
-            self.P_history.append(P_perp.clone().detach().cpu())
-            w = self.classifier.weight_vector().to(self.device)
+            w = self.classifier.weight_vector().float().cpu()  # (d,)
             H_cur, P_perp = self.remove_direction(w, H_cur, P_perp)
+            self.P_history.append(P_perp.clone())
             P_lang_rows.append(w.detach().cpu())
             if self.verbose:
-                print(f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} (chance={chance_acc:.4f}) '
-                      f'-> remove direction {w.shape[0]}')
+                print(
+                    f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} '
+                    f'(chance={chance_acc:.4f}) -> remove direction d={w.numel()}'
+                )
 
-        P_lang = torch.stack(P_lang_rows, dim=0) if P_lang_rows else torch.empty((0, d)) # (k, d)
-        return H_cur, P_perp, P_lang, accs # (n, d), (d, d), (k, d), list[float]
-
+        P_lang = (
+            torch.stack(P_lang_rows, dim=0)
+            if P_lang_rows
+            else torch.empty((0, d), dtype=torch.float32)
+        )
+        return H_cur, P_perp.cpu(), P_lang, accs
 
     def fresh_probe_accuracy(self, H_proj: torch.Tensor) -> float:
-        """Train a fresh linear probe on the projected H to verify language info is gone.
-
-        Reuses the build_* pipeline on the projected representations and returns the
-        final validation accuracy. A successful INLP run drives this down to chance.
-        """
-        self.H = H_proj
-        self.build_classification_dataloader()
-        self.build_classifier()
-        self.build_optimizer()
-        self.build_scheduler()
-        _, _, acc = self.train_classifier()
+        """Train a fresh linear probe on projected H; success => near chance."""
+        self._rebuild_for_H(H_proj)
+        _, _, acc = self.train_classifier(desc='fresh probe epochs')
         return acc
 
     def run(self):
-        # 1. remove language-predictive directions via INLP (paper Sec. 3.2, Eq. 2)
         H_proj, P_perp, P_lang, accs = self.inlp()
 
-        # 2. summary of the removal trajectory
         chance_acc = self.chance_accuracy()
         print(f'\n[INLP-run] iters run: {len(accs)}')
         print(f'[INLP-run] acc per iter: {[round(a, 4) for a in accs]}')
-        print(f'[INLP-run] removed directions: {P_lang.shape[0]} (d={self.H.shape[1]})')
+        print(f'[INLP-run] removed directions: {P_lang.shape[0]} (d={H_proj.shape[1]})')
 
-        # 3. fresh language probe on the projected H — confirms language info is gone
-        #    (paper Sec. 4.2: drop in language classification accuracy after INLP)
         acc_after = self.fresh_probe_accuracy(H_proj)
-        print(f'[INLP-run] fresh clf acc after INLP: {acc_after:.4f} '
-              f'(chance={chance_acc:.4f})')
-
+        print(
+            f'[INLP-run] fresh clf acc after INLP: {acc_after:.4f} '
+            f'(chance={chance_acc:.4f})'
+        )
         return H_proj, P_perp, P_lang, accs, acc_after
-    
-    
 
 
-def parse_layer_indices(arg: str, n_layers: int) -> list[int]:
-    """Resolve --layer_indices: 'all' | '1,2,3' | '5' -> sorted list of layer indices."""
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+def parse_layer_indices(arg: str, layer_keys: list[int]) -> list[int]:
+    """Resolve --layer_indices: 'all' | '1,2,3' | '5' against available keys."""
     arg = arg.strip()
+    keys = sorted(layer_keys)
     if arg == 'all':
-        return list(range(n_layers))
+        return keys
     if ',' in arg:
-        return sorted(int(x) for x in arg.split(','))
-    return [int(arg)]
+        wanted = sorted(int(x) for x in arg.split(','))
+    else:
+        wanted = [int(arg)]
+    missing = [i for i in wanted if i not in keys]
+    if missing:
+        raise KeyError(f'layer_indices not in hiddens: {missing}')
+    return wanted
+
+
+def _torch_load(path: str | Path):
+    """Load a .pt file; prefer mmap to avoid holding every layer in RAM."""
+    path = Path(path)
+    try:
+        return torch.load(path, map_location='cpu', weights_only=True, mmap=True)
+    except TypeError:
+        return torch.load(path, map_location='cpu', weights_only=True)
 
 
 def load_hiddens(path: str | Path) -> dict[int, torch.Tensor]:
-    obj = torch.load(path, map_location='cpu', weights_only=True)
+    obj = _torch_load(path)
     if isinstance(obj, dict):
-        return {int(k): v.float() for k, v in obj.items()}
-    else:
-        raise ValueError
+        return {int(k): v for k, v in obj.items()}
+    raise ValueError(f'expected dict[layer->Tensor], got {type(obj)} from {path}')
 
 
-def load_labels(path: str | Path) -> torch.Tensor:
-    obj = torch.load(path, map_location='cpu', weights_only=True)
-    if isinstance(obj, torch.Tensor):
-        return obj.long().view(-1)
-    else:
-        raise ValueError
+def resolve_hs_path(
+    hs_dir: Path,
+    lang: str,
+    split: str,
+    template: str,
+) -> Path:
+    name = template.format(split=split, lang=lang)
+    path = hs_dir / name
+    if not path.exists():
+        raise FileNotFoundError(f'missing hiddens for lang={lang}: {path}')
+    return path
+
+
+def discover_layer_keys_and_counts(
+    hs_dir: Path,
+    langs: list[str],
+    split: str,
+    template: str,
+) -> tuple[list[int], dict[str, int], dict[str, Path]]:
+    """Peek each lang file for layer keys + N without merging tensors."""
+    paths: dict[str, Path] = {}
+    counts: dict[str, int] = {}
+    key_sets: list[set[int]] = []
+    for lang in langs:
+        if lang not in LANG2ID:
+            raise ValueError(f'unknown lang={lang}; known={list(LANG2ID)}')
+        path = resolve_hs_path(hs_dir, lang, split, template)
+        paths[lang] = path
+        obj = _torch_load(path)
+        if not isinstance(obj, dict):
+            raise ValueError(f'expected dict in {path}')
+        keys = {int(k) for k in obj.keys()}
+        any_H = next(iter(obj.values()))
+        n = int(any_H.shape[0])
+        counts[lang] = n
+        key_sets.append(keys)
+        print(f'[data] {lang}: {path.name}  N={n}  layers={len(keys)}')
+        del obj
+        gc.collect()
+    common = sorted(set.intersection(*key_sets))
+    if not common:
+        raise RuntimeError('no common layer indices across languages')
+    print(f'[data] langs={langs} counts={counts} common_layers={len(common)}')
+    return common, counts, paths
+
+
+def load_layer_multilingual(
+    handles: dict[str, dict],
+    langs: list[str],
+    layer_idx: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pull one layer from already-opened (mmap) lang handles; concat H + lang_ids."""
+    chunks: list[torch.Tensor] = []
+    id_chunks: list[torch.Tensor] = []
+    for lang in langs:
+        obj = handles[lang]
+        if layer_idx in obj:
+            H = obj[layer_idx]
+        elif str(layer_idx) in obj:
+            H = obj[str(layer_idx)]
+        else:
+            raise KeyError(f'layer {layer_idx} missing for lang={lang}')
+        # clone so we own a dense tensor independent of the mmap handle
+        H = H.float().contiguous().clone()
+        chunks.append(H)
+        id_chunks.append(torch.full((H.shape[0],), LANG2ID[lang], dtype=torch.long))
+    H_all = torch.cat(chunks, dim=0)
+    lang_ids = torch.cat(id_chunks, dim=0)
+    del chunks, id_chunks
+    return H_all, lang_ids
+
+
+def load_multilingual_rewards(
+    reward_dir: str | Path,
+    langs: list[str],
+    split: str,
+    template: str,
+    expected_counts: dict[str, int] | None = None,
+) -> torch.Tensor:
+    """Concatenate per-language reward tensors in the same lang order as H."""
+    reward_dir = Path(reward_dir)
+    chunks: list[torch.Tensor] = []
+    for lang in langs:
+        name = template.format(split=split, lang=lang)
+        path = reward_dir / name
+        if not path.exists():
+            raise FileNotFoundError(f'missing reward for lang={lang}: {path}')
+        r = torch.load(path, map_location='cpu', weights_only=True)
+        r = r.float().contiguous().view(-1)
+        if expected_counts is not None and lang in expected_counts:
+            if len(r) != expected_counts[lang]:
+                raise ValueError(
+                    f'reward N mismatch for {lang}: got {len(r)}, '
+                    f'expected hs N={expected_counts[lang]} ({path})'
+                )
+        print(f'[data] reward {lang}: {path.name}  N={len(r)}  '
+              f'mean={r.mean().item():.4f}')
+        chunks.append(r)
+    rewards = torch.cat(chunks, dim=0)
+    print(f'[data] merged rewards N={len(rewards)} mean={rewards.mean().item():.4f}')
+    return rewards
 
 
 def set_args():
     p = argparse.ArgumentParser(
-        description='Run INLP to remove language-predictive directions from hidden states.'
+        description='Run multilingual INLP (one-vs-rest) on pooled hidden states.'
     )
-    # data
-    p.add_argument('--hiddens_path', type=str, required=True,
-                   help='path to dict[layer_idx -> Tensor(N, d)] of hidden states.')
-    p.add_argument('--label_path', type=str, required=True,
-                   help='path to Tensor(N,) of integer language ids (one-vs-rest is built '
-                        'from --target_lang_id).')
-    p.add_argument('--target_lang_id', type=int, required=True,
-                   help='language id treated as the positive class (one-vs-rest).')
-    p.add_argument('--layer_indices', type=str, default='all',
-                   help="'all' | '1,2,3' | '5' — layers to run INLP on.")
+    p.add_argument(
+        '--hs_dir',
+        type=str,
+        default='/root/autodl-tmp/exp1_math/hs/Qwen2.5-3B-Instruct',
+        help='directory containing per-language hs_*.pt files.',
+    )
+    p.add_argument(
+        '--langs',
+        type=str,
+        default='en,zh',
+        help='comma-separated languages to pool, e.g. en,zh or en,zh,es,vi,tr.',
+    )
+    p.add_argument(
+        '--split',
+        type=str,
+        default='train',
+        choices=['train', 'test'],
+        help='which split of hiddens to fit INLP on.',
+    )
+    p.add_argument(
+        '--hs_template',
+        type=str,
+        default='hs_math_{split}_{lang}_n8_tokens1024.pt',
+        help='filename template under --hs_dir; fields: {split}, {lang}.',
+    )
+    p.add_argument(
+        '--reward_dir',
+        type=str,
+        default='/root/autodl-tmp/exp1_math/judge',
+        help='directory containing per-language reward_*.pt files.',
+    )
+    p.add_argument(
+        '--reward_template',
+        type=str,
+        default='reward_math_{split}_{lang}_n8_t1.5_tokens1024.pt',
+        help='filename template under --reward_dir; fields: {split}, {lang}.',
+    )
+    p.add_argument(
+        '--target_lang',
+        type=str,
+        default='all',
+        help="'all' = one-vs-rest for every lang in --langs; "
+             "or a single lang code like 'zh'.",
+    )
+    p.add_argument(
+        '--layer_indices',
+        type=str,
+        default='all',
+        help="'all' | '1,2,3' | '5' — layers to run INLP on.",
+    )
 
-    # INLP hyperparameters
     p.add_argument('--T', type=int, default=30, help='max INLP iterations.')
-    p.add_argument('--epochs_per_iter', type=int, default=50,
-                   help='epochs to train each per-iteration language classifier.')
+    p.add_argument(
+        '--epochs_per_iter',
+        type=int,
+        default=50,
+        help='epochs to train each per-iteration language classifier.',
+    )
     p.add_argument('--lr', type=float, default=1e-3)
     p.add_argument('--weight_decay', type=float, default=0.0)
-    p.add_argument('--chance_tolerance', type=float, default=0.02,
-                   help='stop when clf acc <= chance_acc + chance_tolerance.')
-    p.add_argument('--batch_size', type=int, default=64)
-    p.add_argument('--split_ratio', type=float, default=0.95,
-                   help='train fraction of the train/test split for the language classifier.')
+    p.add_argument(
+        '--chance_tolerance',
+        type=float,
+        default=0.02,
+        help='stop when clf acc <= chance_acc + chance_tolerance.',
+    )
+    p.add_argument('--batch_size', type=int, default=512)
+    p.add_argument(
+        '--split_ratio',
+        type=float,
+        default=0.95,
+        help='train fraction for the language classifier probe split.',
+    )
 
-    # runtime
+    # capability probe (paper Δcap)
+    p.add_argument(
+        '--cap_epochs',
+        type=int,
+        default=50,
+        help='epochs for capability (reward) probe before/after INLP.',
+    )
+    p.add_argument(
+        '--cap_scope',
+        type=str,
+        default='target',
+        choices=['target', 'all'],
+        help="'target': probe reward only on target-lang samples (language-conditioned Δcap); "
+             "'all': probe on the full multilingual pool.",
+    )
+    p.add_argument(
+        '--no_cap_probe',
+        action='store_true',
+        help='skip capability probing (language INLP only).',
+    )
+
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--verbose', action='store_true')
-    p.add_argument('--out_dir', type=str, default='./inlp_results')
+    p.add_argument(
+        '--save_H_proj',
+        action='store_true',
+        help='also save projected H (large: ~N*d floats per layer). default: off.',
+    )
+    p.add_argument(
+        '--out_dir',
+        type=str,
+        default='/root/autodl-tmp/exp1_math/inlp/Qwen2.5-3B-Instruct',
+    )
     return p.parse_args()
+
+
+def run_inlp_on_layer(
+    H: torch.Tensor,
+    y_ovr: torch.Tensor,
+    rewards: torch.Tensor,
+    lang_ids: torch.Tensor,
+    target_lang: str,
+    layer_idx: int,
+    args: argparse.Namespace,
+    device: torch.device,
+    chance_acc: float,
+    n_pos: int,
+    n_neg: int,
+) -> dict:
+    out_dir = Path(args.out_dir) / f'target_{target_lang}'
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(
+        f'\n----- target={target_lang} layer={layer_idx} | '
+        f'N={len(H)} d={H.shape[1]} | n_pos={n_pos} n_neg={n_neg} -----'
+    )
+    runner = Runner(
+        H=H,
+        y=y_ovr.clone(),
+        T=args.T,
+        epochs_per_iter=args.epochs_per_iter,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        chance_tolerance=args.chance_tolerance,
+        batch_size=args.batch_size,
+        verbose=args.verbose,
+        split_ratio=args.split_ratio,
+        seed=args.seed,
+        device=device,
+    )
+    H_proj, P_perp, P_lang, accs, acc_after = runner.run()
+
+    # --- capability probe (paper Sec 4.2 / Eq. 3 Δcap) ---
+    cap_acc_before = float('nan')
+    cap_acc_after = float('nan')
+    delta_cap = float('nan')
+    if not args.no_cap_probe:
+        if args.cap_scope == 'target':
+            mask = lang_ids == LANG2ID[target_lang]
+            H_cap = H[mask]
+            H_cap_proj = H_proj[mask]
+            r_cap = rewards[mask]
+            scope_tag = f'target={target_lang}'
+        else:
+            H_cap, H_cap_proj, r_cap = H, H_proj, rewards
+            scope_tag = 'all'
+        print(
+            f'[cap] scope={scope_tag} N={len(r_cap)} '
+            f'reward_mean={r_cap.float().mean().item():.4f}'
+        )
+        cap_acc_before = probe_capability(
+            H_cap, r_cap,
+            epochs=args.cap_epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            split_ratio=args.split_ratio,
+            seed=args.seed,
+            device=device,
+            desc=f'cap before L{layer_idx}',
+        )
+        cap_acc_after = probe_capability(
+            H_cap_proj, r_cap,
+            epochs=args.cap_epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            split_ratio=args.split_ratio,
+            seed=args.seed,
+            device=device,
+            desc=f'cap after L{layer_idx}',
+        )
+        delta_cap = cap_acc_after - cap_acc_before
+        print(
+            f'[cap] before={cap_acc_before:.4f} after={cap_acc_after:.4f} '
+            f'Δcap={delta_cap:+.4f}'
+        )
+        del H_cap, H_cap_proj, r_cap
+
+    if args.save_H_proj:
+        torch.save(H_proj, out_dir / f'H_proj_layer{layer_idx}.pt')
+    torch.save(P_perp, out_dir / f'P_perp_layer{layer_idx}.pt')
+    torch.save(P_lang, out_dir / f'P_lang_layer{layer_idx}.pt')
+    torch.save(
+        torch.tensor(accs, dtype=torch.float32),
+        out_dir / f'accs_layer{layer_idx}.pt',
+    )
+
+    del runner, H_proj
+    gc.collect()
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+
+    return {
+        'target_lang': target_lang,
+        'layer': layer_idx,
+        'n_iters': len(accs),
+        'n_removed': int(P_lang.shape[0]),
+        'd': int(H.shape[1]),
+        'acc_first': accs[0] if accs else float('nan'),
+        'acc_last': accs[-1] if accs else float('nan'),
+        'acc_after': acc_after,
+        'chance_acc': chance_acc,
+        'n_pos': n_pos,
+        'n_neg': n_neg,
+        'cap_acc_before': cap_acc_before,
+        'cap_acc_after': cap_acc_after,
+        'delta_cap': delta_cap,
+        'cap_scope': args.cap_scope if not args.no_cap_probe else 'skipped',
+    }
 
 
 def main():
@@ -412,67 +851,96 @@ def main():
     torch.manual_seed(args.seed)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    if device.type == 'cpu': print('using cpu')
-    
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if device.type == 'cpu':
+        print('using cpu')
 
-    layers = load_hiddens(args.hiddens_path)
-    lang_ids = load_labels(args.label_path)
-    layer_indices = parse_layer_indices(args.layer_indices, n_layers=len(layers))
+    langs = [x.strip() for x in args.langs.split(',') if x.strip()]
+    if not langs:
+        raise ValueError('--langs is empty')
 
-    # one-vs-rest binary labels for the target language
-    y_ovr = (lang_ids == args.target_lang_id).long()
-    n_pos = int((y_ovr == 1).sum())
-    n_neg = int((y_ovr == 0).sum())
-    print(f'[INLP] target_lang_id={args.target_lang_id} | '
-          f'n_pos={n_pos} n_neg={n_neg} | chance_acc={max(n_pos, n_neg) / len(y_ovr):.4f}')
+    if args.target_lang.strip() == 'all':
+        targets = langs
+    else:
+        targets = [args.target_lang.strip()]
+        for t in targets:
+            if t not in langs:
+                raise ValueError(
+                    f'target_lang={t} not in --langs={langs}; '
+                    f'one-vs-rest needs the target present in the pool'
+                )
 
-    summary_rows: list[dict] = []
-    bar = tqdm(layer_indices, desc='INLP over layers')
-    for layer_idx in bar:
-        H = layers[layer_idx]
-        assert len(H) == len(y_ovr), \
-            f'layer {layer_idx}: hiddens {len(H)} != labels {len(y_ovr)}'
+    hs_dir = Path(args.hs_dir)
+    common_layers, counts, paths = discover_layer_keys_and_counts(
+        hs_dir, langs, args.split, args.hs_template,
+    )
+    layer_indices = parse_layer_indices(args.layer_indices, layer_keys=common_layers)
 
-        runner = Runner(
-            H=H, y=y_ovr.clone(),
-            T=args.T, epochs_per_iter=args.epochs_per_iter,
-            lr=args.lr, weight_decay=args.weight_decay,
-            chance_tolerance=args.chance_tolerance, batch_size=args.batch_size,
-            verbose=args.verbose, split_ratio=args.split_ratio,
+    rewards = None
+    if not args.no_cap_probe:
+        rewards = load_multilingual_rewards(
+            reward_dir=args.reward_dir,
+            langs=langs,
+            split=args.split,
+            template=args.reward_template,
+            expected_counts=counts,
         )
-        # Runner auto-detected device in __init__; honour --device if compatible.
-        runner.device = device
-        runner.classifier = runner.classifier.to(device)
-        runner.pos_weight = runner.pos_weight.to(device)
-        H_proj, P_perp, P_lang, accs, acc_after = runner.run()
 
-        torch.save(H_proj, out_dir / f'H_proj_layer{layer_idx}.pt')
-        torch.save(P_perp, out_dir / f'P_perp_layer{layer_idx}.pt')
-        torch.save(P_lang, out_dir / f'P_lang_layer{layer_idx}.pt')
-        torch.save(torch.tensor(accs, dtype=torch.float32),
-                   out_dir / f'accs_layer{layer_idx}.pt')
+    print('[data] opening mmap handles ...')
+    handles = {lang: _torch_load(paths[lang]) for lang in langs}
 
-        chance_acc = max(n_pos, n_neg) / len(y_ovr)
-        summary_rows.append({
-            'layer': layer_idx,
-            'n_iters': len(accs),
-            'n_removed': int(P_lang.shape[0]),
-            'd': int(H.shape[1]),
-            'acc_first': accs[0] if accs else float('nan'),
-            'acc_last': accs[-1] if accs else float('nan'),
-            'acc_after': acc_after,
-            'chance_acc': chance_acc,
-        })
+    Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+    # prepare per-target summary files lazily
+    per_target_rows: dict[str, list[dict]] = {t: [] for t in targets}
+    all_rows: list[dict] = []
 
-    summary_path = out_dir / 'summary.csv'
+    layer_bar = tqdm(layer_indices, desc='INLP over layers', dynamic_ncols=True)
+    for layer_idx in layer_bar:
+        H, lang_ids = load_layer_multilingual(handles, langs, layer_idx)
+        if rewards is not None and len(rewards) != len(H):
+            raise ValueError(
+                f'layer {layer_idx}: H N={len(H)} != rewards N={len(rewards)}'
+            )
+        for target in targets:
+            layer_bar.set_postfix(layer=layer_idx, target=target, refresh=True)
+            target_id = LANG2ID[target]
+            y_ovr = (lang_ids == target_id).long()
+            n_pos = int((y_ovr == 1).sum())
+            n_neg = int((y_ovr == 0).sum())
+            chance_acc = max(n_pos, n_neg) / len(y_ovr)
+            row = run_inlp_on_layer(
+                H=H,
+                y_ovr=y_ovr,
+                rewards=rewards if rewards is not None else torch.empty(0),
+                lang_ids=lang_ids,
+                target_lang=target,
+                layer_idx=layer_idx,
+                args=args,
+                device=device,
+                chance_acc=chance_acc,
+                n_pos=n_pos,
+                n_neg=n_neg,
+            )
+            per_target_rows[target].append(row)
+            all_rows.append(row)
+        del H, lang_ids
+        gc.collect()
+
+    for target, rows in per_target_rows.items():
+        summary_path = Path(args.out_dir) / f'target_{target}' / 'summary.csv'
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(summary_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f'[INLP] target={target} summary -> {summary_path}')
+
+    summary_path = Path(args.out_dir) / 'summary_all.csv'
     with open(summary_path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=list(all_rows[0].keys()))
         writer.writeheader()
-        writer.writerows(summary_rows)
-    print(f'\n[INLP] done. summary -> {summary_path}')
-
+        writer.writerows(all_rows)
+    print(f'\n[INLP] all targets done. summary -> {summary_path}')
+    print(f'[INLP] counts={counts}')
 
 
 if __name__ == '__main__':

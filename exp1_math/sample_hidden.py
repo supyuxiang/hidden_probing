@@ -160,7 +160,7 @@ def sample_hiddens(
         return batch_hs
     
     @torch.inference_mode()
-    def process_batch_mean(batch:list[str],batch_question_formatted):
+    def process_batch_mean(batch:list[str],batch_instruction_formatted:list[str]):
         encoded_full = tokenizer(
             batch,
             return_tensors='pt',
@@ -168,7 +168,7 @@ def sample_hiddens(
             truncation=True,
         )
         encoded_instruction = tokenizer(
-            batch_question_formatted,
+            batch_instruction_formatted,
             return_tensors='pt',
             padding=True,
             truncation=True,
@@ -198,20 +198,22 @@ def sample_hiddens(
         # if mean pooling, we need query instruction_mask additionally
         if pooling_mode == 'mean':
             batch_question = question_ls[i:i+batch_size]
-            batch_question_formatted = []
+            batch_instruction_formatted = []
             for q in batch_question:
                 msg = [
                     {'role':'system','content':language.system_prompt},
                     {'role':'user','content':language.user_prompt}
                 ]
-                batch_question_formatted.append(
+                batch_instruction_formatted.append(
                     tokenizer.apply_chat_template(msg,add_generation_prompt=True,tokenize=False)
                 )
 
-        batch_hs = process_batch_last(batch) if pooling_mode == 'last' else process_batch_mean(batch,batch_question_formatted)
+        batch_hs = process_batch_last(batch) if pooling_mode == 'last' else process_batch_mean(batch,batch_instruction_formatted)
         for layer_idx in layer_indices:
             total_hs[layer_idx].append(batch_hs[layer_idx])
         del batch_hs, batch
+        if pooling_mode == 'mean':
+            del batch_instruction_formatted, batch_question
         torch.cuda.empty_cache()
         gc.collect()
 

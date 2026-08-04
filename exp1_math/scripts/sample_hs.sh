@@ -88,7 +88,7 @@ CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/sample_hidden.py \
 
 #####################    es     #####################
 CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/sample_hidden.py \
-    --batch_size 20 \
+    --batch_size 4 \
     --model_path /root/autodl-tmp/models/Qwen2.5-3B-Instruct \
     --data_path /root/hidden_prob/exp1_math/sampled/Qwen2.5-3B-Instruct/res_math_train_es_n8_t1.5_tokens1024.json \
     --save_path /root/autodl-tmp/exp1_math/hs/Qwen2.5-3B-Instruct/hs_math_train_es_n8_tokens1024.pt \
@@ -99,7 +99,7 @@ CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/sample_hidden.py \
 #####################    vi     #####################
 
 CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/sample_hidden.py \
-    --batch_size 20 \
+    --batch_size 4 \
     --model_path /root/autodl-tmp/models/Qwen2.5-3B-Instruct \
     --data_path /root/hidden_prob/exp1_math/sampled/Qwen2.5-3B-Instruct/res_math_train_vi_n8_t1.5_tokens1024.json \
     --save_path /root/autodl-tmp/exp1_math/hs/Qwen2.5-3B-Instruct/hs_math_train_vi_n8_tokens1024.pt \
@@ -110,7 +110,7 @@ CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/sample_hidden.py \
 
 #####################    tr     #####################
 CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/sample_hidden.py \
-    --batch_size 20 \
+    --batch_size 4 \
     --model_path /root/autodl-tmp/models/Qwen2.5-3B-Instruct \
     --data_path /root/hidden_prob/exp1_math/sampled/Qwen2.5-3B-Instruct/res_math_train_tr_n8_t1.5_tokens1024.json \
     --save_path /root/autodl-tmp/exp1_math/hs/Qwen2.5-3B-Instruct/hs_math_train_tr_n8_tokens1024.pt \
