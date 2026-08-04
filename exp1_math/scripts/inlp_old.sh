@@ -10,10 +10,11 @@ HS_DIR="/root/autodl-tmp/exp1_math/hs/Qwen2.5-3B-Instruct"
 REWARD_DIR="/root/autodl-tmp/exp1_math/judge"
 OUT_DIR="/root/autodl-tmp/exp1_math/inlp/Qwen2.5-3B-Instruct/en_zh_train"
 
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" python /root/hidden_prob/exp1_math/inlp_runner.py \
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" python /root/hidden_prob/exp1_math/inlp_runner_old.py \
     --hs_dir "${HS_DIR}" \
     --reward_dir "${REWARD_DIR}" \
     --langs en,zh \
+    --split train \
     --hs_template 'hs_math_{split}_{lang}_n8_tokens1024.pt' \
     --reward_template 'reward_math_{split}_{lang}_n8_t1.5_tokens1024.pt' \
     --target_lang all \
