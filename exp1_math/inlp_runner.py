@@ -99,7 +99,6 @@ def probe_capability(
     desc: str = 'cap probe',
 ) -> float:
     """
-    Linear capability probe (same recipe as scan_layers / trainer):
     BCEWithLogits on reward ∈ {0,1}, AdamW + cosine, return final val accuracy.
     """
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -108,15 +107,14 @@ def probe_capability(
     assert H.shape[0] == rewards.shape[0], (H.shape, rewards.shape)
 
     n = H.shape[0]
-    train_size = max(1, round(n * split_ratio))
-    test_size = max(1, n - train_size)
-    if train_size + test_size > n:
-        train_size = n - test_size
-
-    g = torch.Generator().manual_seed(seed)
-    perm = torch.randperm(n, generator=g)
-    train_idx = perm[:train_size].tolist()
-    test_idx = perm[train_size : train_size + test_size].tolist()
+    train_size = round(n * split_ratio)
+    # test_size = n - train_size
+    # g = torch.Generator().manual_seed(seed)
+    # perm = torch.randperm(n, generator=g)
+    # train_idx = perm[:train_size].tolist()
+    # test_idx = perm[train_size:].tolist()
+    train_idx = list(range(train_size))
+    test_idx = list(range(train_size, n))
 
     dataset = BinaryLinearDataset(H, rewards)
     dl_train = DataLoader(
@@ -134,12 +132,11 @@ def probe_capability(
     )
 
     model = BinaryLinearClassifier(input_dim=H.shape[1]).to(device)
-    opt = AdamW(
+    optimizer = AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=lr,
-        weight_decay=weight_decay,
+        lr=lr, weight_decay=weight_decay, betas=(0.9, 0.999), eps=1e-8,
     )
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=0.0)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=0.0)
 
     train_rw = rewards[train_idx].view(-1)
     n_pos = (train_rw == 1).sum().clamp(min=1).float()
@@ -156,10 +153,10 @@ def probe_capability(
             batch_y = batch_y.to(device, non_blocking=True)
             logits = model(batch_hs)
             loss = loss_fn(logits, batch_y)
-            opt.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            opt.step()
-        sched.step()
+            optimizer.step()
+        scheduler.step()
 
         model.eval()
         correct = total = 0
