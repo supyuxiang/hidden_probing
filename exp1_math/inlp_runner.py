@@ -231,6 +231,7 @@ class Runner:
         n = max(total, 1)
         return total_loss / n, correct / n
 
+    # for languages classification
     def train_classifier(self, desc: str = 'epochs') -> tuple[float, float, float]:
         train_loss = val_loss = val_acc = 0.0
         epoch_bar = tqdm(
@@ -255,7 +256,7 @@ class Runner:
                 f'{"-" * 50}'
             )
         return train_loss, val_loss, val_acc
-
+    
     @staticmethod
     def nullspace_projection(w: torch.Tensor) -> torch.Tensor:
         """
@@ -312,7 +313,7 @@ class Runner:
         return H_new, P_perp_new
 
 
-    #####   metrics for probing capability  #####
+    #####   metrics for capability probing #####
     @staticmethod
     def probe_capability(
         H: torch.Tensor,
@@ -540,16 +541,12 @@ def load_layer_multilingual(
     layer_idx: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Pull one layer from already-opened (mmap) lang handles; concat H + lang_ids."""
-    chunks: list[torch.Tensor] = []
-    id_chunks: list[torch.Tensor] = []
+    chunks: list[torch.Tensor] = [] # for storing hidden states
+    id_chunks: list[torch.Tensor] = [] # for storing language ids (one-hot encoding)
     for lang in langs:
         obj = handles[lang]
-        if layer_idx in obj:
-            H = obj[layer_idx]
-        elif str(layer_idx) in obj:
-            H = obj[str(layer_idx)]
-        else:
-            raise KeyError(f'layer {layer_idx} missing for lang={lang}')
+        assert layer_idx in obj or str(layer_idx) in obj
+        H = obj[layer_idx] if layer_idx in obj else obj[str(layer_idx)]
         # clone so we own a dense tensor independent of the mmap handle
         H = H.float().contiguous().clone()
         chunks.append(H)
@@ -697,7 +694,7 @@ def set_args():
 
 def run_inlp_on_layer(
     H: torch.Tensor,
-    y_ovr: torch.Tensor,
+    y_labels: torch.Tensor,
     rewards: torch.Tensor,
     lang_ids: torch.Tensor,
     target_lang: str,
@@ -717,7 +714,7 @@ def run_inlp_on_layer(
     )
     runner = Runner(
         H=H,
-        y=y_ovr.clone(),
+        y=y_labels.clone(),
         T=args.T,
         epochs_per_iter=args.epochs_per_iter,
         lr=args.lr,
@@ -750,7 +747,7 @@ def run_inlp_on_layer(
     )
     cap_acc_before = probe_capability(
         H_cap,r_cap,
-        epoch=args.cap_epochs,
+        epochs=args.cap_epochs,
         batch_size=args.batch_size,
         lr=args.lr,
         weight_decay=args.weight_decay,
@@ -820,11 +817,13 @@ def main():
         targets = [args.target_lang.strip()]
 
     hs_dir = Path(args.hs_dir)
+    # get common layers and paths for build handles
     common_layers, counts, paths = discover_layer_keys_and_counts(
         hs_dir, langs, args.hs_template,
     )
     layer_indices = parse_layer_indices(args.layer_indices, layer_keys=common_layers)
 
+    # load rewards for language classification
     rewards = load_multilingual_rewards(
         reward_dir=args.reward_dir,
         langs=langs,
@@ -833,6 +832,7 @@ def main():
     )
 
     print('[data] opening mmap handles ...')
+    # build handles for efficient loading of hidden states for language classification
     handles = {
         lang: torch.load(paths[lang], map_location='cpu', weights_only=True, mmap=True)
         for lang in langs
@@ -840,26 +840,23 @@ def main():
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     # prepare per-target summary files lazily
-    per_target_rows: dict[str, list[dict]] = {t: [] for t in targets}
-    all_rows: list[dict] = []
+    per_target_rows: dict[str, list[dict]] = {t: [] for t in targets} # for storing results for each target language
+    all_rows: list[dict] = [] # for storing results for all target languages
 
     layer_bar = tqdm(layer_indices, desc='INLP over layers', dynamic_ncols=True)
     for layer_idx in layer_bar:
         H, lang_ids = load_layer_multilingual(handles, langs, layer_idx)
-        if rewards is not None and len(rewards) != len(H):
-            raise ValueError(
-                f'layer {layer_idx}: H N={len(H)} != rewards N={len(rewards)}'
-            )
+        assert rewards is not None and len(H) == len(rewards), \
+        f'layer {layer_idx}: H N={len(H)} != rewards N={len(rewards)}' # for checking
         for target in targets:
             layer_bar.set_postfix(layer=layer_idx, target=target, refresh=True)
             target_id = LANG2ID[target]
-            y_ovr = (lang_ids == target_id).long()
-            n_pos = int((y_ovr == 1).sum())
-            n_neg = int((y_ovr == 0).sum())
-            chance_acc = max(n_pos, n_neg) / len(y_ovr)
+            y_labels = (lang_ids == target_id).long() # build 0-1 labels for language classification
+            n_pos, n_neg = int((y_labels == 1).sum()), int((y_labels == 0).sum())
+            chance_acc = max(n_pos, n_neg) / len(y_labels) # for chance accuracy, as baseline
             row = run_inlp_on_layer(
                 H=H,
-                y_ovr=y_ovr,
+                y_labels=y_labels,
                 rewards=rewards,
                 lang_ids=lang_ids,
                 target_lang=target,
