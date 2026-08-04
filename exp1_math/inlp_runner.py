@@ -197,7 +197,7 @@ class Runner:
             last_epoch=-1,
         )
 
-    def train_classifier_epoch(self) -> float:
+    def train_language_classifier_epoch(self) -> float:
         self.classifier.train()
         epoch_loss = 0.0
         loader = self.dataloader_train
@@ -213,7 +213,7 @@ class Runner:
             epoch_loss += loss.item()
         return epoch_loss / max(len(loader), 1)
 
-    def eval_classifier_epoch(self) -> tuple[float, float]:
+    def eval_language_classifier_epoch(self) -> tuple[float, float]:
         self.classifier.eval()
         total_loss = 0.0
         correct = 0
@@ -232,7 +232,7 @@ class Runner:
         return total_loss / n, correct / n
 
     # for languages classification
-    def train_classifier(self, desc: str = 'epochs') -> tuple[float, float, float]:
+    def train_language_classifier(self, desc: str = 'epochs') -> tuple[float, float, float]:
         train_loss = val_loss = val_acc = 0.0
         epoch_bar = tqdm(
             range(self.epochs_per_iter),
@@ -240,10 +240,10 @@ class Runner:
             leave=False,
             dynamic_ncols=True,
         )
-        for _epoch in epoch_bar:
-            train_loss = self.train_classifier_epoch()
+        for ep in epoch_bar:
+            train_loss = self.train_language_classifier_epoch()
             self.scheduler.step()
-            val_loss, val_acc = self.eval_classifier_epoch()
+            val_loss, val_acc = self.eval_language_classifier_epoch()
             epoch_bar.set_postfix(
                 loss=f'{train_loss:.4f}',
                 val_acc=f'{val_acc:.4f}',
@@ -251,7 +251,7 @@ class Runner:
             )
             print_if_verbose(
                 self.verbose,
-                f'{"-" * 50} '
+                f'{"-" * 50} language classification '
                 f'train_loss: {train_loss:.4f}, val_loss: {val_loss:.4f}, val_acc: {val_acc:.4f} '
                 f'{"-" * 50}'
             )
@@ -270,7 +270,7 @@ class Runner:
 
     def chance_accuracy(self) -> float:
         """Majority-class accuracy (the INLP convergence target)."""
-        y = self.y
+        y = self.y.clone()
         return max((y == 1).float().mean().item(), (y == 0).float().mean().item())
 
     def _init_projection(self) -> torch.Tensor:
@@ -286,7 +286,7 @@ class Runner:
         w: torch.Tensor,
         H_cur: torch.Tensor,
         P_perp: torch.Tensor,
-        chunk_size: int = 8192,
+        chunk_size: int = 4096,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply rank-1 null-space projection along w and accumulate into P_perp.
 
@@ -297,19 +297,28 @@ class Runner:
         n_chunks = (H_cur.shape[0] + chunk_size - 1) // chunk_size
         pieces: list[torch.Tensor] = []
         chunk_iter = range(0, H_cur.shape[0], chunk_size)
-        if n_chunks > 4:
-            chunk_iter = tqdm(
-                chunk_iter,
-                total=n_chunks,
-                desc='project H',
-                leave=False,
-                dynamic_ncols=True,
-            )
+        # if n_chunks > 4:
+        #     chunk_iter = tqdm(
+        #         chunk_iter,
+        #         total=n_chunks,
+        #         desc='project H',
+        #         leave=False,
+        #         dynamic_ncols=True,
+        #     )
+        # else:
         for i in chunk_iter:
             chunk = H_cur[i : i + chunk_size].to(self.device, non_blocking=True)
             pieces.append((chunk @ P_t).cpu())
+            del chunk
+            gc.collect()
+            torch.cuda.empty_cache()
+
         H_new = torch.cat(pieces, dim=0)
         P_perp_new = (P_perp.to(self.device) @ P_t).cpu()
+        del P_t, pieces
+        gc.collect()
+        torch.cuda.empty_cache()
+
         return H_new, P_perp_new
 
 
@@ -419,7 +428,7 @@ class Runner:
         for t in iter_bar:
             # Train on the *current* (already projected) representations.
             self._rebuild_for_H(H_cur)
-            _, _, acc = self.train_classifier(desc=f'epochs[iter {t}/{self.T}]')
+            _, _, acc = self.train_language_classifier(desc=f'epochs[iter {t}/{self.T}]')
             accs.append(acc)
             iter_bar.set_postfix(
                 acc=f'{acc:.4f}',
@@ -459,10 +468,10 @@ class Runner:
         )
         return H_cur, P_perp.cpu(), P_lang, accs
 
-    def fresh_probe_accuracy(self, H_proj: torch.Tensor) -> float:
+    def fresh_language_classifier_accuracy(self, H_proj: torch.Tensor) -> float:
         """Train a fresh linear probe on projected H; success => near chance."""
         self._rebuild_for_H(H_proj)
-        _, _, acc = self.train_classifier(desc='fresh probe epochs')
+        _, _, acc = self.train_language_classifier(desc='fresh probe epochs')
         return acc
 
     def run(self):
@@ -473,10 +482,10 @@ class Runner:
         print(f'[INLP-run] acc per iter: {[round(a, 4) for a in accs]}')
         print(f'[INLP-run] removed directions: {P_lang.shape[0]} (d={H_proj.shape[1]})')
 
-        acc_after = self.fresh_probe_accuracy(H_proj)
+        acc_after = self.fresh_language_classifier_accuracy(H_proj)
         print_if_verbose(
             self.verbose,
-            f'[INLP-run] fresh clf acc after INLP: {acc_after:.4f} '
+            f'[INLP-run] fresh language classifier acc after INLP: {acc_after:.4f} '
             f'(chance={chance_acc:.4f})'
         )
         return H_proj, P_perp, P_lang, accs, acc_after
@@ -785,8 +794,8 @@ def run_inlp_on_layer(
     del runner, H_proj
     torch.cuda.empty_cache()
     gc.collect()
-    
-    return {
+
+    metrics = {
         'target_lang': target_lang,
         'layer': layer_idx,
         'n_iters': len(accs),
@@ -803,6 +812,7 @@ def run_inlp_on_layer(
         'delta_cap': delta_cap,
         'cap_scope': args.cap_scope,
     }
+    return metrics
 
 
 def main():
@@ -810,9 +820,10 @@ def main():
 
     langs = [x.strip() for x in args.langs.split(',') if x.strip()]
 
+    # for all target languages
     if args.target_lang.strip() == 'all':
         targets = langs
-    else:
+    else: # for single target language
         assert ',' not in args.target_lang.strip() and args.target_lang.strip() in langs, target_lang
         targets = [args.target_lang.strip()]
 
@@ -823,7 +834,7 @@ def main():
     )
     layer_indices = parse_layer_indices(args.layer_indices, layer_keys=common_layers)
 
-    # load rewards for language classification
+    # load rewards for capbility probing
     rewards = load_multilingual_rewards(
         reward_dir=args.reward_dir,
         langs=langs,
@@ -870,8 +881,8 @@ def main():
             per_target_rows[target].append(row)
             all_rows.append(row)
         del H, lang_ids
-        torch.cuda.empty_cache()
         gc.collect()
+        torch.cuda.empty_cache()
 
     for target, rows in per_target_rows.items():
         summary_path = Path(args.out_dir) / f'target_{target}' / 'summary.csv'
@@ -889,6 +900,8 @@ def main():
         writer.writerows(all_rows)
     print(f'\n[INLP] all targets done. summary -> {summary_path}')
     print(f'[INLP] counts={counts}')
+
+    print('all done!')
 
 
 if __name__ == '__main__':
