@@ -1,4 +1,5 @@
-# translate the data to different languages
+# NOTE: translate the raw en data to different languages (zh, es, tr, vi)
+
 import torch
 import torch.nn as nn
 from pathlib import Path
@@ -8,8 +9,6 @@ import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from vllm import LLM, SamplingParams
 import re
-
-
 
 
 def mapping_language(language):

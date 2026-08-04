@@ -1,3 +1,5 @@
+# NOTE: for capability probing only. Now, don't be used.
+
 import argparse
 import json
 import sys
