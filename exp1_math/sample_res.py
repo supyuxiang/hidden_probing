@@ -15,7 +15,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-
+import torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -103,11 +103,15 @@ def parse_args():
     p.add_argument( "--save_path",type=str,default="/root/autodl-tmp/exp1_math/sampled/Qwen2.5-3B-Instruct/res_math.json")
     p.add_argument('--language_type',type=str,default='en')
     p.add_argument('--n',type=int,default=8,help='number of samples per question')
+    p.add_argument('--seed',type=int,default=42)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    from transformers import set_seed as hf_set_seed
+    hf_set_seed(args.seed)
+    
     question_ls,answer_ls = load_questions_answers(args.data_path)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
