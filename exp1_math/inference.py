@@ -10,9 +10,9 @@ if device.type=='cpu': print('using cpu')
 
 
 def load_hs(hs_path:str|Path):
-    hs = torch.load(hs_path,weight_only=True)
-    assert len(hs.shape) == 2, f'shape of hs: {hs.shape}, expected 2D tensor'
-    # hs: batch_size, hidden_dim
+    obj = torch.load(hs_path, weight_only=True, mmap=True)
+    assert isinstance(obj, dict)
+    hs = {int(k):v for k,v in obj.items()} # layer_idx: (N, hidden_dim)
     return hs
 
 

@@ -24,7 +24,10 @@ class ProbeDataset(Dataset):
         assert self.reward_path.exists(), self.reward_path
         self._load()
 
-    def _load(self):        
+    def _load(self):
+        # obj = torch.load(self.hiddens_path,weights_only=True, map_location='cpu', mmap=True)    
+        # assert isinstance(obj, dict)
+        # self.hiddens = {int(k):v for k,v in obj.items()} # layer_idx: (N, hidden_dim)
         self.hiddens = torch.load(self.hiddens_path, weights_only=True, map_location='cpu')[self.layer_idx].contiguous()
         self.rewards = torch.load(self.reward_path, weights_only=True, map_location='cpu').contiguous().view(-1,1) # batch_size, hiden_dim
         assert len(self.hiddens) == len(self.rewards)

@@ -515,7 +515,8 @@ def parse_layer_indices(arg: str, layer_keys: list[int]) -> list[int]:
 def load_hiddens(path: str | Path) -> dict[int, torch.Tensor]:
     obj = torch.load(path, map_location='cpu', weights_only=True, mmap=True)
     assert isinstance(obj, dict)
-    return {int(k):v for k,v in obj.items()}
+    hs = {int(k):v for k,v in obj.items()} # layer_idx: (N, hidden_dim)
+    return hs
     
 
 def discover_layer_keys_and_counts(
