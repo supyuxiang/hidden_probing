@@ -36,6 +36,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm import tqdm
 from omegaconf import OmegaConf
 from dataclasses import dataclass
+import swanlab
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -139,8 +140,12 @@ class Runner:
         self.H_history: list[torch.Tensor] = []
         self.P_history: list[torch.Tensor] = []
 
+        self._init_swanlab()
         self.build_loss_fn()
         self._rebuild_for_H(self.H)
+    
+    def _init_swanlab(self):
+        pass
 
     def build_loss_fn(self):
         n_pos = (self.y == 1).sum().clamp(min=1).float()
@@ -730,46 +735,46 @@ def run_inlp_on_layer(
     cap_acc_before = float('nan')
     cap_acc_after = float('nan')
     delta_cap = float('nan')
-    if not args.no_cap_probe:
-        if args.cap_scope == 'target':
-            mask = lang_ids == LANG2ID[target_lang]
-            H_cap = H[mask]
-            H_cap_proj = H_proj[mask]
-            r_cap = rewards[mask]
-            scope_tag = f'target={target_lang}'
-        else:
-            H_cap, H_cap_proj, r_cap = H, H_proj, rewards
-            scope_tag = 'all'
-        print(
-            f'[cap] scope={scope_tag} N={len(r_cap)} '
-            f'reward_mean={r_cap.float().mean().item():.4f}'
-        )
-        cap_acc_before = probe_capability(
-            H_cap, r_cap,
-            epochs=args.cap_epochs,
-            batch_size=args.batch_size,
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            split_ratio=args.split_ratio,
-            seed=args.seed,
-            desc=f'cap before L{layer_idx}',
-        )
-        cap_acc_after = probe_capability(
-            H_cap_proj, r_cap,
-            epochs=args.cap_epochs,
-            batch_size=args.batch_size,
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            split_ratio=args.split_ratio,
-            seed=args.seed,
-            desc=f'cap after L{layer_idx}',
-        )
-        delta_cap = cap_acc_after - cap_acc_before
-        print(
-            f'[cap] before={cap_acc_before:.4f} after={cap_acc_after:.4f} '
-            f'Δcap={delta_cap:+.4f}'
-        )
-        del H_cap, H_cap_proj, r_cap
+    if args.cap_scope == 'target':
+        mask = lang_ids == LANG2ID[target_lang]
+        H_cap = H[mask]
+        H_cap_proj = H_proj[mask]
+        r_cap = rewards[mask]
+        scope_tag = f'target={target_lang}'
+    else:
+        H_cap, H_cap_proj, r_cap = H, H_proj, rewards
+        scope_tag = 'all'
+    print(
+        f'[cap] scope={scope_tag} N={len(r_cap)} '
+        f'reward_mean={r_cap.float().mean().item():.4f}'
+    )
+    cap_acc_before = probe_capability(
+        H_cap,r_cap,
+        epoch=args.cap_epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        split_ratio=args.split_ratio,
+        seed=args.seed,
+        desc=f'cap before L{layer_idx}',
+    )
+    cap_acc_after = probe_capability(
+        H_cap_proj,r_cap,
+        epochs=args.cap_epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        split_ratio=args.split_ratio,
+        seed=args.seed,
+        desc=f'cap after L{layer_idx}'
+    )
+    delta_cap = cap_acc_after - cap_acc_before
+    print(
+        f'[cap] before={cap_acc_before:.4f} after={cap_acc_after:.4f} '
+        f'Δcap={delta_cap:+.4f}'
+    )
+    
+    del H_cap, H_cap_proj, r_cap
 
     if args.save_H_proj:
         torch.save(H_proj, out_dir / f'H_proj_layer{layer_idx}.pt')
@@ -781,10 +786,9 @@ def run_inlp_on_layer(
     )
 
     del runner, H_proj
+    torch.cuda.empty_cache()
     gc.collect()
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
-
+    
     return {
         'target_lang': target_lang,
         'layer': layer_idx,
@@ -800,7 +804,7 @@ def run_inlp_on_layer(
         'cap_acc_before': cap_acc_before,
         'cap_acc_after': cap_acc_after,
         'delta_cap': delta_cap,
-        'cap_scope': args.cap_scope if not args.no_cap_probe else 'skipped',
+        'cap_scope': args.cap_scope,
     }
 
 
