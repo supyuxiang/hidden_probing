@@ -74,12 +74,15 @@ def get_pooling_fn(pooling_mode:str):
         return _last
 
     elif pooling_mode == 'mean':
-        def _mean(x:torch.Tensor,attention_mask:torch.Tensor) -> torch.Tensor:
+        def _mean(x:torch.Tensor,attention_mask_full:torch.Tensor,attention_mask_instruction:torch.Tensor) -> torch.Tensor:
             # x: batch_size, seq_len, hidden_dim
             # attention_mask: batch_size, seq_len
-            num_token = (attention_mask.sum(dim=-1)).clamp(min=1.0).unsqueeze(1) # batch_size,1
-            x_valid = x * attention_mask.unsqueeze(-1) # batch_size, seq_len, hidden_dim
-            return x_valid.sum(dim=1) / num_token
+            # num_token_full = (attention_mask_full.sum(dim=-1)).clamp(min=1.0).unsqueeze(1) # batch_size,1
+            # num_token_instruction = (attention_mask_instruction.sum(dim=-1).clamp(min=1.0)).unsqueeze(1) # batch_size,1
+            res_token_mask = attention_mask_full - attention_mask_instruction # 
+            num_res_token = res_token_mask.sum(dim=-1).clamp(min=1.0).unsqueeze(1) # batch_size, 1
+            x_valid = x * res_token_mask.unsqueeze(-1) # batch_size, seq_len, hidden_dim
+            return x_valid.sum(dim=1) / num_res_token
         return _mean
     
     # elif pooling_mode == 'cls':
@@ -136,7 +139,7 @@ def sample_hiddens(
 
 
     @torch.inference_mode()
-    def process_batch(batch:list[str]):
+    def process_batch_last(batch:list[str]):
         # batch: list[str]
         encoded = tokenizer(
             batch,
@@ -156,6 +159,33 @@ def sample_hiddens(
         gc.collect()
         return batch_hs
     
+    @torch.inference_mode()
+    def process_batch_mean(batch:list[str],batch_question_formatted):
+        encoded_full = tokenizer(
+            batch,
+            return_tensors='pt',
+            padding=True,
+            truncation=True,
+        )
+        encoded_instruction = tokenizer(
+            batch_question_formatted,
+            return_tensors='pt',
+            padding=True,
+            truncation=True,
+        )
+        attention_mask_full = encoded_full['attention_mask']
+        attention_mask_instruction = encoded_instruction['attention_mask'].to(device)
+        inputs = {k:v.to(device) for k,v in attention_mask_full.items()}
+        o = model(**inputs,output_hidden_states=True)
+        batch_hs = {
+            layer_idx:pooling_fn(o.hidden_states[layer_idx],attention_mask_full,attention_mask_instruction).detach().cpu()
+            for layer_idx in layer_indices
+        }
+        del inputs, attention_mask_full, attention_mask_instruction, encoded_full, encoded_instruction,o
+        torch.cuda.empty_cache()
+        gc.collect()
+        return batch_hs
+    
 
     total_hs = {
         layer_idx:[]
@@ -165,7 +195,20 @@ def sample_hiddens(
     sample_hs_bar = tqdm(range(0,len(data_ls),batch_size),desc='sampling hs ...')
     for i in sample_hs_bar:
         batch = formatted[i:i+batch_size]
-        batch_hs = process_batch(batch)
+        # if mean pooling, we need query instruction_mask additionally
+        if pooling_mode == 'mean':
+            batch_question = question_ls[i:i+batch_size]
+            batch_question_formatted = []
+            for q in batch_question:
+                msg = [
+                    {'role':'system','content':language.system_prompt},
+                    {'role':'user','content':language.user_prompt}
+                ]
+                batch_question_formatted.append(
+                    tokenizer.apply_chat_template(msg,add_generation_prompt=True,tokenize=False)
+                )
+
+        batch_hs = process_batch_last(batch) if pooling_mode == 'last' else process_batch_mean(batch,batch_question_formatted)
         for layer_idx in layer_indices:
             total_hs[layer_idx].append(batch_hs[layer_idx])
         del batch_hs, batch
