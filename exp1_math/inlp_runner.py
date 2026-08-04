@@ -821,7 +821,7 @@ def main():
     )
     layer_indices = parse_layer_indices(args.layer_indices, layer_keys=common_layers)
 
-    rewards_inlp = load_multilingual_rewards(
+    rewards = load_multilingual_rewards(
         reward_dir=args.reward_dir,
         langs=langs,
         template=args.reward_template,
@@ -829,7 +829,10 @@ def main():
     )
 
     print('[data] opening mmap handles ...')
-    handles = {lang: torch.load(paths[lang], map_location='cpu', weights_only=True, mmap=True) for lang in langs}
+    handles = {
+        lang: torch.load(paths[lang], map_location='cpu', weights_only=True, mmap=True)
+        for lang in langs
+    }
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     # prepare per-target summary files lazily
@@ -839,9 +842,9 @@ def main():
     layer_bar = tqdm(layer_indices, desc='INLP over layers', dynamic_ncols=True)
     for layer_idx in layer_bar:
         H, lang_ids = load_layer_multilingual(handles, langs, layer_idx)
-        if rewards_inlp is not None and len(rewards_inlp) != len(H):
+        if rewards is not None and len(rewards) != len(H):
             raise ValueError(
-                f'layer {layer_idx}: H N={len(H)} != rewards_inlp N={len(rewards_inlp)}'
+                f'layer {layer_idx}: H N={len(H)} != rewards N={len(rewards)}'
             )
         for target in targets:
             layer_bar.set_postfix(layer=layer_idx, target=target, refresh=True)
@@ -853,7 +856,7 @@ def main():
             row = run_inlp_on_layer(
                 H=H,
                 y_ovr=y_ovr,
-                rewards=rewards_inlp,
+                rewards=rewards,
                 lang_ids=lang_ids,
                 target_lang=target,
                 layer_idx=layer_idx,
@@ -866,6 +869,7 @@ def main():
             per_target_rows[target].append(row)
             all_rows.append(row)
         del H, lang_ids
+        torch.cuda.empty_cache()
         gc.collect()
 
     for target, rows in per_target_rows.items():
