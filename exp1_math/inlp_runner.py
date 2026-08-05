@@ -717,7 +717,8 @@ def run_single_layer(
     )
     H_proj, P_perp, w_stacked, acc_ls, acc_after = inlp_runner.run()
 
-    # NOTE: 构造capability probe的输入数据,若scope为target,则只使用target语言的样本,否则使用所有样本
+    # NOTE: 构造capability probe的输入数据,若scope为target,则只使用target语言的样本,否则使用所有样本.
+    #NOTE: default is target.
     # cap_acc_before = cap_acc_after = delta_cap = delta_cap_relative = float('nan')
     if args.cap_scope == 'target':
         mask = (lang_ids == LANG2ID[target_lang])
@@ -728,7 +729,7 @@ def run_single_layer(
         del mask
         gc.collect()
         torch.cuda.empty_cache()
-    elif args.cap_scope == 'all':
+    elif args.cap_scope == 'all': # don't be used almost
         H_cap_before, H_cap_after, rewards_cap = H, H_proj, rewards
         scope_tag = 'all'
     else:
