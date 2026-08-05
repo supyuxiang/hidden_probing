@@ -102,8 +102,8 @@ def print_if_verbose(verbose:bool,text:str) -> None:
 class INLP_Runner:
     def __init__(
         self,
-        H: torch.Tensor,
-        y: torch.Tensor,
+        H: torch.Tensor, # hidden states
+        y: torch.Tensor, # language labels
         T: int = 15,
         epochs_per_iter: int = 30,
         lr: float = 1e-3,
@@ -133,9 +133,8 @@ class INLP_Runner:
 
         self.generator = torch.Generator().manual_seed(self.seed)
 
-        n = len(self.y)
-        self.train_size = max(1, round(n * self.split_ratio))
-        self.test_size = max(1, n - self.train_size)
+        self.train_size = max(1, round( len(self.y) * self.split_ratio))
+        self.test_size = max(1, len(self.y) - self.train_size)
 
         self.H_history: list[torch.Tensor] = []
         self.P_history: list[torch.Tensor] = []
@@ -147,11 +146,12 @@ class INLP_Runner:
     def _init_swanlab(self):
         pass
 
+    # for language classification
     def build_loss_fn(self):
         n_pos = (self.y == 1).sum().clamp(min=1).float()
         n_neg = (self.y == 0).sum().clamp(min=1).float()
         self.pos_weight = (n_neg / n_pos).to(self.device).view(1)
-        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        self.language_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
 
     def _rebuild_for_H(self, H: torch.Tensor):
         """Point dataloaders at H and re-init a fresh linear classifier + optim."""
@@ -164,7 +164,7 @@ class INLP_Runner:
             batch_size=self.batch_size,
             shuffle=True,
             collate_fn=collate_fn,
-            generator=torch.Generator().manual_seed(self.seed),
+            generator=self.generator,
         )
         self.dataloader_test = DataLoader(
             self.dataset_test,
@@ -172,16 +172,16 @@ class INLP_Runner:
             shuffle=False,
             collate_fn=collate_fn,
         )
-        self.build_classifier()
-        self.build_optimizer()
-        self.build_scheduler()
+        self.build_language_classifier()
+        self.build_language_optimizer()
+        self.build_language_scheduler()
 
-    def build_classifier(self):
-        self.classifier = BinaryLinearClassifier(input_dim=self.H.shape[1]).to(self.device)
-        self.trainable_params = [p for p in self.classifier.parameters() if p.requires_grad]
+    def build_language_classifier(self):
+        self.language_classifier = BinaryLinearClassifier(input_dim=self.H.shape[1]).to(self.device)
+        self.trainable_params = [p for p in self.language_classifier.parameters() if p.requires_grad]
 
-    def build_optimizer(self):
-        self.optimizer = AdamW(
+    def build_language_optimizer(self):
+        self.language_optimizer = AdamW(
             self.trainable_params,
             lr=self.lr,
             weight_decay=self.weight_decay,
@@ -189,32 +189,32 @@ class INLP_Runner:
             eps=1e-8,
         )
 
-    def build_scheduler(self):
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
+    def build_language_scheduler(self):
+        self.language_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.language_optimizer,
             T_max=self.epochs_per_iter,
             eta_min=0.0,
             last_epoch=-1,
         )
 
     def train_language_classifier_epoch(self) -> float:
-        self.classifier.train()
+        self.language_classifier.train()
         epoch_loss = 0.0
         loader = self.dataloader_train
-        it = loader if not self.verbose else tqdm(loader, desc='Training Classifier', leave=False)
+        it = loader if not self.verbose else tqdm(loader, desc='Training Language Classifier', leave=False)
         for batch_hs, batch_y in it:
             batch_hs = batch_hs.to(self.device, non_blocking=True)
             batch_y = batch_y.to(self.device, non_blocking=True)
-            logits = self.classifier(batch_hs)
-            loss = self.loss_fn(logits, batch_y)
-            self.optimizer.zero_grad(set_to_none=True)
+            logits = self.language_classifier(batch_hs)
+            loss = self.language_loss_fn(logits, batch_y)
+            self.language_optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            self.optimizer.step()
+            self.language_optimizer.step()
             epoch_loss += loss.item()
         return epoch_loss / max(len(loader), 1)
 
     def eval_language_classifier_epoch(self) -> tuple[float, float]:
-        self.classifier.eval()
+        self.language_classifier.eval()
         total_loss = 0.0
         correct = 0
         total = 0
@@ -222,8 +222,8 @@ class INLP_Runner:
             for batch_hs, batch_y in self.dataloader_test:
                 batch_hs = batch_hs.to(self.device, non_blocking=True)
                 batch_y = batch_y.to(self.device, non_blocking=True)
-                logits = self.classifier(batch_hs)
-                loss = self.loss_fn(logits, batch_y)
+                logits = self.language_classifier(batch_hs)
+                loss = self.language_loss_fn(logits, batch_y)
                 pred = (torch.sigmoid(logits) >= 0.5).float()
                 correct += (pred == batch_y).sum().item()
                 total += batch_y.numel()
@@ -242,7 +242,7 @@ class INLP_Runner:
         )
         for ep in epoch_bar:
             train_loss = self.train_language_classifier_epoch()
-            self.scheduler.step()
+            self.language_scheduler.step()
             val_loss, val_acc = self.eval_language_classifier_epoch()
             epoch_bar.set_postfix(
                 loss=f'{train_loss:.4f}',
@@ -251,7 +251,7 @@ class INLP_Runner:
             )
             print_if_verbose(
                 self.verbose,
-                f'{"-" * 50} language classification '
+                f'{"-" * 50} Language Classification '
                 f'train_loss: {train_loss:.4f}, val_loss: {val_loss:.4f}, val_acc: {val_acc:.4f} '
                 f'{"-" * 50}'
             )
@@ -268,7 +268,7 @@ class INLP_Runner:
         norm_sq = (w.T @ w).clamp_min(1e-12)
         return torch.eye(d, dtype=w.dtype, device=w.device) - (w @ w.T) / norm_sq
 
-    def chance_accuracy(self) -> float:
+    def language_chance_accuracy(self) -> float:
         """Majority-class accuracy (the INLP convergence target)."""
         y = self.y.clone()
         return max((y == 1).float().mean().item(), (y == 0).float().mean().item())
@@ -411,7 +411,7 @@ class INLP_Runner:
         # Keep large H on CPU; only classifier / P live on self.device.
         self.H = self.H.cpu().contiguous().view(self.H.shape[0], -1)
         self.y = self.y.cpu().contiguous().view(-1)
-        chance_acc = self.chance_accuracy()
+        chance_acc = self.language_chance_accuracy()
         P_perp = self._init_projection()
         d = self.H.shape[1]
 
@@ -451,7 +451,7 @@ class INLP_Runner:
                 )
                 break
 
-            w = self.classifier.query_weight().float().cpu()  # (d,)
+            w = self.language_classifier.query_weight().float().cpu()  # (d,)
             H_cur, P_perp = self.remove_direction(w, H_cur, P_perp)
             self.P_history.append(P_perp.clone())
             P_lang_rows.append(w.detach().cpu())
@@ -477,7 +477,7 @@ class INLP_Runner:
     def run(self):
         H_proj, P_perp, P_lang, accs = self.inlp()
 
-        chance_acc = self.chance_accuracy()
+        chance_acc = self.language_chance_accuracy()
         print(f'\n[INLP-run] iters run: {len(accs)}')
         print(f'[INLP-run] acc per iter: {[round(a, 4) for a in accs]}')
         print(f'[INLP-run] removed directions: {P_lang.shape[0]} (d={H_proj.shape[1]})')
@@ -710,7 +710,6 @@ def run_single_layer(
     target_lang: str,
     layer_idx: int,
     args: argparse.Namespace,
-    device: torch.device,
     chance_acc: float,
     n_pos: int,
     n_neg: int,
@@ -734,7 +733,6 @@ def run_single_layer(
         verbose=args.verbose,
         split_ratio=args.split_ratio,
         seed=args.seed,
-        device=device,
     )
     H_proj, P_perp, P_lang, accs, acc_after = inlp_runner.run()
 
@@ -874,7 +872,6 @@ def main():
                 target_lang=target,
                 layer_idx=layer_idx,
                 args=args,
-                device=device,
                 chance_acc=chance_acc,
                 n_pos=n_pos,
                 n_neg=n_neg,
