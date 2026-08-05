@@ -727,9 +727,9 @@ def run_single_layer(
         rewards_cap = rewards[mask]
         scope_tag = f'target={target_lang}'
         del mask
-        gc.collect()
-        torch.cuda.empty_cache()
     elif args.cap_scope == 'all': # don't be used almost
+        import warnings
+        warnings.warn(f'cap_scope is all, but it is not used almost.')
         H_cap_before, H_cap_after, rewards_cap = H, H_proj, rewards
         scope_tag = 'all'
     else:
@@ -767,9 +767,6 @@ def run_single_layer(
         f'Δcap_relative={delta_cap_relative:.4f}'
     )
 
-    del H_cap_before, H_cap_after, rewards_cap
-    gc.collect()
-    torch.cuda.empty_cache()
 
     if args.save_H_proj:
         torch.save(H_proj, out_dir / f'H_proj_layer{layer_idx}.pt')
@@ -800,7 +797,7 @@ def run_single_layer(
         'cap_scope': args.cap_scope,
     }
     
-    del inlp_runner, H_proj
+    del inlp_runner, H_proj, H_cap_before, H_cap_after, rewards_cap
     gc.collect()
     torch.cuda.empty_cache()
 
