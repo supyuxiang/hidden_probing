@@ -468,7 +468,7 @@ class INLP_Runner:
         print_if_verbose(
             self.verbose,
             f'[INLP-run] fresh language classifier acc after INLP: {acc_after:.4f} '
-            f'(chance={self.language_chance_acc:.4f})'
+            f'(chance_acc={self.language_chance_acc:.4f}, tolerance={self.chance_tolerance:.4f})'
         )
         return H_proj, P_perp, w_stacked, acc_ls, acc_after
 
@@ -717,25 +717,29 @@ def run_single_layer(
     )
     H_proj, P_perp, w_stacked, acc_ls, acc_after = inlp_runner.run()
 
-    # --- capability probe (paper Sec 4.2 / Eq. 3 Δcap) ---
-    cap_acc_before = float('nan')
-    cap_acc_after = float('nan')
-    delta_cap = float('nan')
+    # NOTE: 构造capability probe的输入数据,若scope为target,则只使用target语言的样本,否则使用所有样本
+    # cap_acc_before = cap_acc_after = delta_cap = delta_cap_relative = float('nan')
     if args.cap_scope == 'target':
-        mask = lang_ids == LANG2ID[target_lang]
-        H_cap = H[mask]
-        H_cap_proj = H_proj[mask]
-        r_cap = rewards[mask]
+        mask = (lang_ids == LANG2ID[target_lang])
+        H_cap_before = H[mask]
+        H_cap_after = H_proj[mask]
+        rewards_cap = rewards[mask]
         scope_tag = f'target={target_lang}'
-    else:
-        H_cap, H_cap_proj, r_cap = H, H_proj, rewards
+        del mask
+        gc.collect()
+        torch.cuda.empty_cache()
+    elif args.cap_scope == 'all':
+        H_cap_before, H_cap_after, rewards_cap = H, H_proj, rewards
         scope_tag = 'all'
+    else:
+        raise NotImplementedError(f'invalid cap_scope: {args.cap_scope}')
+
     print(
-        f'[cap] scope={scope_tag} N={len(r_cap)} '
-        f'reward_mean={r_cap.float().mean().item():.4f}'
+        f'[cap] scope={scope_tag} N={len(rewards_cap)} '
+        f'reward_mean={rewards_cap.float().mean().item():.4f}'
     )
     cap_acc_before = probe_capability(
-        H_cap,r_cap,
+        H_cap_before,rewards_cap,
         epochs=args.cap_epochs,
         batch_size=args.batch_size,
         lr=args.lr,
@@ -745,7 +749,7 @@ def run_single_layer(
         desc=f'cap before L{layer_idx}',
     )
     cap_acc_after = probe_capability(
-        H_cap_proj,r_cap,
+        H_cap_after,rewards_cap,
         epochs=args.cap_epochs,
         batch_size=args.batch_size,
         lr=args.lr,
@@ -755,12 +759,16 @@ def run_single_layer(
         desc=f'cap after L{layer_idx}'
     )
     delta_cap = cap_acc_after - cap_acc_before
+    delta_cap_relative = (delta_cap / cap_acc_before.clamp(min=1e-9))
     print(
         f'[cap] before={cap_acc_before:.4f} after={cap_acc_after:.4f} '
         f'Δcap={delta_cap:+.4f}'
+        f'Δcap_relative={delta_cap_relative:.4f}'
     )
-    
-    del H_cap, H_cap_proj, r_cap
+
+    del H_cap_before, H_cap_after, rewards_cap
+    gc.collect()
+    torch.cuda.empty_cache()
 
     if args.save_H_proj:
         torch.save(H_proj, out_dir / f'H_proj_layer{layer_idx}.pt')
@@ -787,6 +795,7 @@ def run_single_layer(
         'cap_acc_before': cap_acc_before,
         'cap_acc_after': cap_acc_after,
         'delta_cap': delta_cap,
+        'delta_cap_relative': delta_cap_relative,
         'cap_scope': args.cap_scope,
     }
     
