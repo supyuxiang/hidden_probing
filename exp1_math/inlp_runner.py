@@ -19,6 +19,9 @@ Returns:
   P_perp  : (d, d) cumulative projection P_1 @ ... @ P_T (apply to fresh H with H @ P_perp).
   P_lang  : (k, d) stacked removed direction vectors w_i (rowspace = language subspace).
   acc_ls    : list[float] per-iteration classifier accuracy (information removed).
+
+
+yxfeng, 2026.8.5
 """
 
 import argparse
@@ -323,11 +326,9 @@ class INLP_Runner:
         assert H.shape[0] == rewards.shape[0], (H.shape, rewards.shape)
 
         n = H.shape[0]
-        train_size = max(1, min(n - 1, round(n * split_ratio))) if n > 1 else 1
+        train_size = round(n * split_ratio)
         train_indices = list(range(train_size))
         test_indices = list(range(train_size, n))
-        if not test_indices:  # n==1 edge case: evaluate on the only sample
-            test_indices = train_indices
 
         dataset = BinaryLinearDataset(H, rewards)
         dataloader_train = DataLoader(
@@ -729,9 +730,11 @@ def run_single_layer(
         torch.tensor(acc_ls, dtype=torch.float32),
         out_dir / f'acc_ls_layer{layer_idx}.pt',
     )
+    del P_perp, w_stacked, acc_ls
 
     # NOTE: 构造capability probe的输入数据,若scope为target,则只使用target语言的样本,否则使用所有样本.
     #NOTE: default is target.
+    # cap_acc_before = cap_acc_after = delta_cap = delta_cap_relative = float('nan')
     if args.cap_scope == 'target':
         mask = (lang_ids == LANG2ID[target_lang])
         H_cap_before = H[mask]
@@ -754,6 +757,7 @@ def run_single_layer(
 
     if args.save_H_proj:
         torch.save(H_proj, out_dir / f'H_proj_layer{layer_idx}.pt')
+    del H_proj
 
     cap_acc_before = INLP_Runner.probe_capability(
         H_cap_before, rewards_cap,
@@ -802,8 +806,7 @@ def run_single_layer(
         'cap_scope': args.cap_scope,
     }
 
-    del inlp_runner, H_proj, H_cap_before, H_cap_after, rewards_cap
-    del P_perp, w_stacked, acc_ls
+    del inlp_runner, H_cap_before, H_cap_after, rewards_cap
     gc.collect()
     torch.cuda.empty_cache()
 
