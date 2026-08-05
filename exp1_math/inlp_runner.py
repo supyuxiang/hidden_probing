@@ -570,6 +570,9 @@ def load_multilingual_rewards(
               f'mean={reward_single.mean().item():.4f}')
         chunks.append(reward_single)
     rewards = torch.cat(chunks, dim=0)
+    del chunks
+    gc.collect()
+    torch.cuda.empty_cache()
     print(f'[data] merged rewards N={len(rewards)} mean={rewards.mean().item():.4f}')
     return rewards
 
@@ -822,7 +825,7 @@ def main():
     common_layers, counts, paths = discover_layer_keys_and_counts(
         hs_dir, langs, args.hs_template,
     )
-    layer_indices = parse_layer_indices(args.layer_indices, common_layers=common_layers)
+    layer_indices: list[int] = parse_layer_indices(args.layer_indices, common_layers=common_layers)
 
     # load rewards for capbility probing
     rewards = load_multilingual_rewards(
