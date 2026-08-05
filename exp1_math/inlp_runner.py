@@ -460,9 +460,12 @@ class INLP_Runner:
     def run(self):
         H_proj, P_perp, w_stacked, acc_ls = self.inlp()
 
-        print(f'\n[INLP-run] iters run: {len(acc_ls)}')
-        print(f'[INLP-run] acc per iter: {[round(a, 4) for a in acc_ls]}')
-        print(f'[INLP-run] removed directions: {w_stacked.shape[0]} (d={H_proj.shape[1]})')
+        print_if_verbose(
+            self.verbose,
+            f'\n[INLP-run] iters run: {len(acc_ls)}'
+            f'[INLP-run] acc per iter: {[round(a, 4) for a in acc_ls]}'
+            f'[INLP-run] removed directions: {w_stacked.shape[0]} (d={H_proj.shape[1]})'
+        )
 
         acc_after = self.fresh_language_classifier_accuracy()
         print_if_verbose(
@@ -717,6 +720,14 @@ def run_single_layer(
     )
     H_proj, P_perp, w_stacked, acc_ls, acc_after = inlp_runner.run()
 
+    torch.save(P_perp, out_dir / f'P_perp_layer{layer_idx}.pt')
+    torch.save(w_stacked, out_dir / f'w_stacked_layer{layer_idx}.pt')
+    torch.save(
+        torch.tensor(acc_ls, dtype=torch.float32),
+        out_dir / f'acc_ls_layer{layer_idx}.pt',
+    )
+    del P_perp, w_stacked, acc_ls
+
     # NOTE: 构造capability probe的输入数据,若scope为target,则只使用target语言的样本,否则使用所有样本.
     #NOTE: default is target.
     # cap_acc_before = cap_acc_after = delta_cap = delta_cap_relative = float('nan')
@@ -739,6 +750,11 @@ def run_single_layer(
         f'[cap] scope={scope_tag} N={len(rewards_cap)} '
         f'reward_mean={rewards_cap.float().mean().item():.4f}'
     )
+
+    if args.save_H_proj:
+        torch.save(H_proj, out_dir / f'H_proj_layer{layer_idx}.pt')
+    del H_proj
+
     cap_acc_before = probe_capability(
         H_cap_before,rewards_cap,
         epochs=args.cap_epochs,
@@ -766,17 +782,6 @@ def run_single_layer(
         f'Δcap={delta_cap:+.4f}'
         f'Δcap_relative={delta_cap_relative:.4f}'
     )
-
-
-    if args.save_H_proj:
-        torch.save(H_proj, out_dir / f'H_proj_layer{layer_idx}.pt')
-    torch.save(P_perp, out_dir / f'P_perp_layer{layer_idx}.pt')
-    torch.save(w_stacked, out_dir / f'w_stacked_layer{layer_idx}.pt')
-    torch.save(
-        torch.tensor(acc_ls, dtype=torch.float32),
-        out_dir / f'acc_ls_layer{layer_idx}.pt',
-    )
-
 
     metrics = {
         'target_lang': target_lang,
