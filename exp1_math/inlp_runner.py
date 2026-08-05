@@ -88,11 +88,11 @@ class BinaryLinearDataset(Dataset):
 
 
 def collate_fn(batch: list[tuple[torch.Tensor, torch.Tensor]]):
-    batch_hs,batch_y = [],[]
-    for hs,y in zip(*batch):
+    batch_hs, batch_y = [], []
+    for hs, y in batch:
         batch_hs.append(hs)
         batch_y.append(y)
-    return torch.stack(batch_hs, dim=0), torch.stack(batch_y, dim=0) # (batch_size, d), (batch_size, 1)
+    return torch.stack(batch_hs, dim=0), torch.stack(batch_y, dim=0)  # (B, d), (B, 1)
 
 
 def print_if_verbose(verbose:bool,text:str) -> None:
@@ -257,6 +257,7 @@ class INLP_Runner:
             )
         return train_loss, val_loss, val_acc
     
+
     @staticmethod
     def nullspace_projection(w: torch.Tensor) -> torch.Tensor:
         """
@@ -314,15 +315,19 @@ class INLP_Runner:
         """
         BCEWithLogits on reward ∈ {0,1}, AdamW + cosine, return final val accuracy.
         """
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        generator = torch.Generator().manual_seed(seed)
 
         H = H.float().contiguous().view(H.shape[0], -1)
         rewards = rewards.float().contiguous().view(-1, 1)
         assert H.shape[0] == rewards.shape[0], (H.shape, rewards.shape)
 
         n = H.shape[0]
-        train_size = round(n * split_ratio)
+        train_size = max(1, min(n - 1, round(n * split_ratio))) if n > 1 else 1
         train_indices = list(range(train_size))
         test_indices = list(range(train_size, n))
+        if not test_indices:  # n==1 edge case: evaluate on the only sample
+            test_indices = train_indices
 
         dataset = BinaryLinearDataset(H, rewards)
         dataloader_train = DataLoader(
@@ -330,7 +335,7 @@ class INLP_Runner:
             batch_size=batch_size,
             shuffle=True,
             collate_fn=collate_fn,
-            generator=self.generator,
+            generator=generator,
         )
         dataloader_test = DataLoader(
             Subset(dataset, test_indices),
@@ -339,7 +344,7 @@ class INLP_Runner:
             collate_fn=collate_fn,
         )
 
-        model = BinaryLinearClassifier(input_dim=H.shape[1]).to(self.device)
+        model = BinaryLinearClassifier(input_dim=H.shape[1]).to(device)
         optimizer = AdamW(
             [p for p in model.parameters() if p.requires_grad],
             lr=lr, weight_decay=weight_decay, betas=(0.9, 0.999), eps=1e-8,
@@ -350,7 +355,7 @@ class INLP_Runner:
         rewards_train = rewards[train_indices].view(-1)
         n_pos = (rewards_train == 1).sum().clamp(min=1).float()
         n_neg = (rewards_train == 0).sum().clamp(min=1).float()
-        pos_weight = (n_neg / n_pos).to(self.device).view(1)
+        pos_weight = (n_neg / n_pos).to(device).view(1)
         loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
         val_acc = 0.0
@@ -358,8 +363,8 @@ class INLP_Runner:
         for epoch in epoch_bar:
             model.train()
             for batch_hs, batch_y in dataloader_train:
-                batch_hs = batch_hs.to(self.device, non_blocking=True)
-                batch_y = batch_y.to(self.device, non_blocking=True)
+                batch_hs = batch_hs.to(device, non_blocking=True)
+                batch_y = batch_y.to(device, non_blocking=True)
                 logits = model(batch_hs)
                 loss = loss_fn(logits, batch_y)
                 optimizer.zero_grad(set_to_none=True)
@@ -371,8 +376,8 @@ class INLP_Runner:
             correct = total = 0
             with torch.no_grad():
                 for batch_hs, batch_y in dataloader_test:
-                    batch_hs = batch_hs.to(self.device, non_blocking=True)
-                    batch_y = batch_y.to(self.device, non_blocking=True)
+                    batch_hs = batch_hs.to(device, non_blocking=True)
+                    batch_y = batch_y.to(device, non_blocking=True)
                     logits = model(batch_hs)
                     # trainer / scan_layers: threshold logit at 0 (== prob >= 0.5)
                     correct += ((logits >= 0).float() == batch_y).sum().item()
@@ -427,15 +432,14 @@ class INLP_Runner:
             self.remove_direction(w)
             w_ls.append(w.detach().cpu())
 
-            del w
-            gc.collect()
-            torch.cuda.empty_cache()
-
             print_if_verbose(
                 self.verbose,
                 f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} '
                 f'(chance={self.language_chance_acc:.4f}) -> remove direction d={w.numel()}'
             )
+            del w
+            gc.collect()
+            torch.cuda.empty_cache()
 
         # stack all protected directions into a single tensor
         w_stacked = (
@@ -482,7 +486,7 @@ class INLP_Runner:
 
 def parse_layer_indices(arg: str, common_layers: list[int]) -> list[int]:
     """Resolve --layer_indices: 'all' | '1,2,3' | '5' against common layers."""
-    arg = arg.strip(),lower()
+    arg = arg.strip().lower()
     if arg == 'all':
         return common_layers
     if ',' in arg:
@@ -600,7 +604,7 @@ def set_args():
     #     choices=['train', 'test'],
     #     help='which split of hiddens to fit INLP on.',
     # )
-     p.add_argument(
+    p.add_argument(
         '--hs_template',
         type=str,
         default='hs_math_train_{lang}_n8_tokens1024.pt',
@@ -725,11 +729,9 @@ def run_single_layer(
         torch.tensor(acc_ls, dtype=torch.float32),
         out_dir / f'acc_ls_layer{layer_idx}.pt',
     )
-    del P_perp, w_stacked, acc_ls
 
     # NOTE: 构造capability probe的输入数据,若scope为target,则只使用target语言的样本,否则使用所有样本.
     #NOTE: default is target.
-    # cap_acc_before = cap_acc_after = delta_cap = delta_cap_relative = float('nan')
     if args.cap_scope == 'target':
         mask = (lang_ids == LANG2ID[target_lang])
         H_cap_before = H[mask]
@@ -737,7 +739,7 @@ def run_single_layer(
         rewards_cap = rewards[mask]
         scope_tag = f'target={target_lang}'
         del mask
-    elif args.cap_scope == 'all': # don't be used almost
+    elif args.cap_scope == 'all':  # don't be used almost
         import warnings
         warnings.warn(f'cap_scope is all, but it is not used almost.')
         H_cap_before, H_cap_after, rewards_cap = H, H_proj, rewards
@@ -752,10 +754,9 @@ def run_single_layer(
 
     if args.save_H_proj:
         torch.save(H_proj, out_dir / f'H_proj_layer{layer_idx}.pt')
-    del H_proj
 
-    cap_acc_before = probe_capability(
-        H_cap_before,rewards_cap,
+    cap_acc_before = INLP_Runner.probe_capability(
+        H_cap_before, rewards_cap,
         epochs=args.cap_epochs,
         batch_size=args.batch_size,
         lr=args.lr,
@@ -764,21 +765,21 @@ def run_single_layer(
         seed=args.seed,
         desc=f'cap before L{layer_idx}',
     )
-    cap_acc_after = probe_capability(
-        H_cap_after,rewards_cap,
+    cap_acc_after = INLP_Runner.probe_capability(
+        H_cap_after, rewards_cap,
         epochs=args.cap_epochs,
         batch_size=args.batch_size,
         lr=args.lr,
         weight_decay=args.weight_decay,
         split_ratio=args.split_ratio,
         seed=args.seed,
-        desc=f'cap after L{layer_idx}'
+        desc=f'cap after L{layer_idx}',
     )
     delta_cap = cap_acc_after - cap_acc_before
-    delta_cap_relative = (delta_cap / cap_acc_before.clamp(min=1e-9))
+    delta_cap_relative = delta_cap / max(cap_acc_before, 1e-9)
     print(
         f'[cap] before={cap_acc_before:.4f} after={cap_acc_after:.4f} '
-        f'Δcap={delta_cap:+.4f}'
+        f'Δcap={delta_cap:+.4f} '
         f'Δcap_relative={delta_cap_relative:.4f}'
     )
 
@@ -800,8 +801,9 @@ def run_single_layer(
         'delta_cap_relative': delta_cap_relative,
         'cap_scope': args.cap_scope,
     }
-    
+
     del inlp_runner, H_proj, H_cap_before, H_cap_after, rewards_cap
+    del P_perp, w_stacked, acc_ls
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -817,7 +819,7 @@ def main():
     if args.target_lang.strip() == 'all':
         targets = langs
     else: # for single target language
-        assert ',' not in args.target_lang.strip() and args.target_lang.strip() in langs, target_lang
+        assert ',' not in args.target_lang.strip() and args.target_lang.strip() in langs, args.target_lang
         targets = [args.target_lang.strip()]
 
     hs_dir = Path(args.hs_dir)
