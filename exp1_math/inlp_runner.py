@@ -288,11 +288,11 @@ class INLP_Runner:
 
         self.H = torch.cat(pieces, dim=0)
         self.P_perp = (self.P_perp.to(self.device) @ P_t).cpu()
+        self.P_history.append(self.P_perp.clone().detach())
         del P_t, pieces
         gc.collect()
         torch.cuda.empty_cache()
 
-        return self.H, self.P_perp
 
 
     #####   metrics for capability probing #####
@@ -391,24 +391,20 @@ class INLP_Runner:
         self.H_history = []
         self.P_history = [self.P_perp.clone().detach()]
 
-        P_lang_rows: list[torch.Tensor] = []
-        accs: list[float] = []
+        w_ls: list[torch.Tensor] = [] # list of protected directions
+        accs: list[float] = [] # list of accuracies
 
-        iter_bar = tqdm(
-            range(1, self.T + 1),
-            desc='INLP iters',
-            leave=False,
-            dynamic_ncols=True,
-        )
+        iter_bar = tqdm(range(1, self.T + 1), desc='INLP iters', leave=False, dynamic_ncols=True)
         for t in iter_bar:
             # Train on the *current* (already projected) representations.
-            self._rebuild_for_H(self.H)
+            if t > 1:
+                self._rebuild_for_H()
             _, _, acc = self.train_language_classifier(desc=f'epochs[iter {t}/{self.T}]')
             accs.append(acc)
             iter_bar.set_postfix(
                 acc=f'{acc:.4f}',
                 chance=f'{chance_acc:.4f}',
-                removed=len(P_lang_rows),
+                removed=len(w_ls),
                 refresh=False,
             )
 
@@ -416,7 +412,7 @@ class INLP_Runner:
                 iter_bar.set_postfix(
                     acc=f'{acc:.4f}',
                     status='converged',
-                    removed=len(P_lang_rows),
+                    removed=len(w_ls),
                     refresh=True,
                 )
                 print_if_verbose(
@@ -428,42 +424,41 @@ class INLP_Runner:
 
             w = self.language_classifier.query_weight().float().cpu()  # (d,)
             self.remove_direction(w)
-            self.P_history.append(P_perp.clone())
-            P_lang_rows.append(w.detach().cpu())
+            w_ls.append(w.detach().cpu())
             print_if_verbose(
                 self.verbose,
                 f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} '
                 f'(chance={chance_acc:.4f}) -> remove direction d={w.numel()}'
             )
 
-        P_lang = (
-            torch.stack(P_lang_rows, dim=0)
-            if P_lang_rows
-            else torch.empty((0, d), dtype=torch.float32)
+        w_stacked = (
+            torch.stack(w_ls, dim=0)
+            if w_ls
+            else torch.empty((0, self.d), dtype=self.H.dtype)
         )
-        return self.H, self.P_perp.cpu(), P_lang, accs
+        return self.H, self.P_perp.cpu(), w_stacked, accs
 
-    def fresh_language_classifier_accuracy(self, H_proj: torch.Tensor) -> float:
+    def fresh_language_classifier_accuracy(self) -> float:
         """Train a fresh linear probe on projected H; success => near chance."""
-        self._rebuild_for_H(H_proj)
+        self._rebuild_for_H()
         _, _, acc = self.train_language_classifier(desc='fresh probe epochs')
         return acc
 
     def run(self):
-        H_proj, P_perp, P_lang, accs = self.inlp()
+        H_proj, P_perp, w_stacked, accs = self.inlp()
 
         chance_acc = self.language_chance_accuracy()
         print(f'\n[INLP-run] iters run: {len(accs)}')
         print(f'[INLP-run] acc per iter: {[round(a, 4) for a in accs]}')
-        print(f'[INLP-run] removed directions: {P_lang.shape[0]} (d={H_proj.shape[1]})')
+        print(f'[INLP-run] removed directions: {w_stacked.shape[0]} (d={H_proj.shape[1]})')
 
-        acc_after = self.fresh_language_classifier_accuracy(H_proj)
+        acc_after = self.fresh_language_classifier_accuracy()
         print_if_verbose(
             self.verbose,
             f'[INLP-run] fresh language classifier acc after INLP: {acc_after:.4f} '
             f'(chance={chance_acc:.4f})'
         )
-        return H_proj, P_perp, P_lang, accs, acc_after
+        return H_proj, P_perp, w_stacked, accs, acc_after
 
 
 # ---------------------------------------------------------------------------
@@ -709,7 +704,7 @@ def run_single_layer(
         split_ratio=args.split_ratio,
         seed=args.seed,
     )
-    H_proj, P_perp, P_lang, accs, acc_after = inlp_runner.run()
+    H_proj, P_perp, w_stacked, accs, acc_after = inlp_runner.run()
 
     # --- capability probe (paper Sec 4.2 / Eq. 3 Δcap) ---
     cap_acc_before = float('nan')
@@ -759,7 +754,7 @@ def run_single_layer(
     if args.save_H_proj:
         torch.save(H_proj, out_dir / f'H_proj_layer{layer_idx}.pt')
     torch.save(P_perp, out_dir / f'P_perp_layer{layer_idx}.pt')
-    torch.save(P_lang, out_dir / f'P_lang_layer{layer_idx}.pt')
+    torch.save(w_stacked, out_dir / f'w_stacked_layer{layer_idx}.pt')
     torch.save(
         torch.tensor(accs, dtype=torch.float32),
         out_dir / f'accs_layer{layer_idx}.pt',
@@ -773,7 +768,7 @@ def run_single_layer(
         'target_lang': target_lang,
         'layer': layer_idx,
         'n_iters': len(accs),
-        'n_removed': int(P_lang.shape[0]),
+        'n_removed': int(w_stacked.shape[0]),
         'd': int(H.shape[1]),
         'acc_first': accs[0] if accs else float('nan'),
         'acc_last': accs[-1] if accs else float('nan'),
