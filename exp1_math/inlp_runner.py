@@ -200,9 +200,8 @@ class INLP_Runner:
     def train_language_classifier_epoch(self) -> float:
         self.language_classifier.train()
         epoch_loss = 0.0
-        loader = self.dataloader_train
-        it = loader if not self.verbose else tqdm(loader, desc='Training Language Classifier', leave=False)
-        for batch_hs, batch_y in it:
+        bar_train = self.dataloader_train if not self.verbose else tqdm(self.dataloader_train, desc='Training Language Classifier', leave=False)
+        for batch_hs, batch_y in bar_train:
             batch_hs = batch_hs.to(self.device, non_blocking=True)
             batch_y = batch_y.to(self.device, non_blocking=True)
             logits = self.language_classifier(batch_hs)
@@ -211,20 +210,19 @@ class INLP_Runner:
             loss.backward()
             self.language_optimizer.step()
             epoch_loss += loss.item()
-        return epoch_loss / max(len(loader), 1)
+        return epoch_loss / max(len(self.dataloader_train), 1)
 
     def eval_language_classifier_epoch(self) -> tuple[float, float]:
         self.language_classifier.eval()
         total_loss = 0.0
-        correct = 0
-        total = 0
+        total = correct = 0
         with torch.no_grad():
             for batch_hs, batch_y in self.dataloader_test:
                 batch_hs = batch_hs.to(self.device, non_blocking=True)
                 batch_y = batch_y.to(self.device, non_blocking=True)
                 logits = self.language_classifier(batch_hs)
                 loss = self.language_loss_fn(logits, batch_y)
-                pred = (torch.sigmoid(logits) >= 0.5).float()
+                pred = (logits >= 0).float() # threshold logit at 0 (== prob >= 0.5)
                 correct += (pred == batch_y).sum().item()
                 total += batch_y.numel()
                 total_loss += loss.item() * batch_y.shape[0]
@@ -234,18 +232,14 @@ class INLP_Runner:
     # for languages classification
     def train_language_classifier(self, desc: str = 'epochs') -> tuple[float, float, float]:
         train_loss = val_loss = val_acc = 0.0
-        epoch_bar = tqdm(
-            range(self.epochs_per_iter),
-            desc=desc,
-            leave=False,
-            dynamic_ncols=True,
-        )
+        epoch_bar = tqdm(range(self.epochs_per_iter), desc=desc, leave=False, dynamic_ncols=True)
         for ep in epoch_bar:
             train_loss = self.train_language_classifier_epoch()
             self.language_scheduler.step()
             val_loss, val_acc = self.eval_language_classifier_epoch()
             epoch_bar.set_postfix(
                 loss=f'{train_loss:.4f}',
+                val_loss=f'{val_loss:.4f}',
                 val_acc=f'{val_acc:.4f}',
                 refresh=False,
             )
@@ -270,12 +264,12 @@ class INLP_Runner:
 
     def language_chance_accuracy(self) -> float:
         """Majority-class accuracy (the INLP convergence target)."""
-        y = self.y.clone()
+        y = self.y.clone().detach()
         return max((y == 1).float().mean().item(), (y == 0).float().mean().item())
 
     def _init_projection(self) -> torch.Tensor:
         d = self.H.shape[1]
-        P_perp = torch.eye(d, dtype=torch.float32)  # keep on CPU; d is small
+        P_perp = torch.eye(d, dtype=self.H.dtype)  # keep on CPU; d is small
         # Do not snapshot full H (n can be 1e5+); only track projection matrices.
         self.H_history = []
         self.P_history = [P_perp.clone()]
@@ -284,8 +278,6 @@ class INLP_Runner:
     def remove_direction(
         self,
         w: torch.Tensor,
-        H_cur: torch.Tensor,
-        P_perp: torch.Tensor,
         chunk_size: int = 4096,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply rank-1 null-space projection along w and accumulate into P_perp.
@@ -294,32 +286,21 @@ class INLP_Runner:
         matrix on GPU; P_perp (d, d) is updated on device then moved back to CPU.
         """
         P_t = self.nullspace_projection(w).to(self.device)
-        n_chunks = (H_cur.shape[0] + chunk_size - 1) // chunk_size
         pieces: list[torch.Tensor] = []
-        chunk_iter = range(0, H_cur.shape[0], chunk_size)
-        # if n_chunks > 4:
-        #     chunk_iter = tqdm(
-        #         chunk_iter,
-        #         total=n_chunks,
-        #         desc='project H',
-        #         leave=False,
-        #         dynamic_ncols=True,
-        #     )
-        # else:
-        for i in chunk_iter:
-            chunk = H_cur[i : i + chunk_size].to(self.device, non_blocking=True)
+        for i in range(0, self.H.shape[0], chunk_size):
+            chunk = self.H[i : i + chunk_size].to(self.device, non_blocking=True)
             pieces.append((chunk @ P_t).cpu())
             del chunk
             gc.collect()
             torch.cuda.empty_cache()
 
-        H_new = torch.cat(pieces, dim=0)
-        P_perp_new = (P_perp.to(self.device) @ P_t).cpu()
+        self.H = torch.cat(pieces, dim=0)
+        self.P_perp = (self.P_perp.to(self.device) @ P_t).cpu()
         del P_t, pieces
         gc.collect()
         torch.cuda.empty_cache()
 
-        return H_new, P_perp_new
+        return self.H, self.P_perp
 
 
     #####   metrics for capability probing #####
@@ -417,7 +398,6 @@ class INLP_Runner:
 
         P_lang_rows: list[torch.Tensor] = []
         accs: list[float] = []
-        H_cur = self.H  # projected copies are allocated inside remove_direction
 
         iter_bar = tqdm(
             range(1, self.T + 1),
@@ -427,7 +407,7 @@ class INLP_Runner:
         )
         for t in iter_bar:
             # Train on the *current* (already projected) representations.
-            self._rebuild_for_H(H_cur)
+            self._rebuild_for_H(self.H)
             _, _, acc = self.train_language_classifier(desc=f'epochs[iter {t}/{self.T}]')
             accs.append(acc)
             iter_bar.set_postfix(
@@ -452,7 +432,7 @@ class INLP_Runner:
                 break
 
             w = self.language_classifier.query_weight().float().cpu()  # (d,)
-            H_cur, P_perp = self.remove_direction(w, H_cur, P_perp)
+            self.remove_direction(w)
             self.P_history.append(P_perp.clone())
             P_lang_rows.append(w.detach().cpu())
             print_if_verbose(
@@ -466,7 +446,7 @@ class INLP_Runner:
             if P_lang_rows
             else torch.empty((0, d), dtype=torch.float32)
         )
-        return H_cur, P_perp.cpu(), P_lang, accs
+        return self.H, self.P_perp.cpu(), P_lang, accs
 
     def fresh_language_classifier_accuracy(self, H_proj: torch.Tensor) -> float:
         """Train a fresh linear probe on projected H; success => near chance."""
