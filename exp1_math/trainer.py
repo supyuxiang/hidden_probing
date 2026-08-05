@@ -1,4 +1,4 @@
-# NOTE: for capability probing only. Now, don't be used.
+# NOTE: for single metrics(e.g. acc) probing only. Now, don't be used.
 
 import argparse
 import json
