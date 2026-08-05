@@ -61,7 +61,7 @@ class BinaryLinearClassifier(nn.Module):
             nn.init.zeros_(self.linear.bias)
 
     def forward(self, H: torch.Tensor) -> torch.Tensor:
-        return self.linear(H)  # (n, 1)
+        return self.linear(H)  # ((n,d) -> (n, 1)
 
     def query_weight(self) -> torch.Tensor:
         """Return the protected direction as a 1-D vector (d,)."""
@@ -134,14 +134,15 @@ class INLP_Runner:
         self.generator = torch.Generator().manual_seed(self.seed)
 
         self.train_size = max(1, round( len(self.y) * self.split_ratio))
-        self.test_size = max(1, len(self.y) - self.train_size)
+        self.train_indices =list(range(self.train_size))
+        self.test_indices = list(range(self.train_size,len(self.y)))
 
         self.H_history: list[torch.Tensor] = []
         self.P_history: list[torch.Tensor] = []
 
         self._init_swanlab()
         self.build_loss_fn()
-        self._rebuild_for_H(self.H)
+        self._rebuild_for_H()
     
     def _init_swanlab(self):
         pass
@@ -153,9 +154,8 @@ class INLP_Runner:
         self.pos_weight = (n_neg / n_pos).to(self.device).view(1)
         self.language_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
 
-    def _rebuild_for_H(self, H: torch.Tensor):
-        """Point dataloaders at H and re-init a fresh linear classifier + optim."""
-        self.H = H.detach().float().contiguous().view(H.shape[0], -1)
+    def _rebuild_for_H(self):
+        """Point dataloaders at self.H and re-init a fresh linear classifier + optim."""
         self.dataset = BinaryLinearDataset(self.H, self.y.float())
         self.dataset_train = Subset(self.dataset, self.train_indices)
         self.dataset_test = Subset(self.dataset, self.test_indices)
@@ -196,7 +196,7 @@ class INLP_Runner:
             eta_min=0.0,
             last_epoch=-1,
         )
-
+    
     def train_language_classifier_epoch(self) -> float:
         self.language_classifier.train()
         epoch_loss = 0.0
@@ -264,16 +264,8 @@ class INLP_Runner:
 
     def language_chance_accuracy(self) -> float:
         """Majority-class accuracy (the INLP convergence target)."""
-        y = self.y.clone().detach()
-        return max((y == 1).float().mean().item(), (y == 0).float().mean().item())
-
-    def _init_projection(self) -> torch.Tensor:
-        d = self.H.shape[1]
-        P_perp = torch.eye(d, dtype=self.H.dtype)  # keep on CPU; d is small
-        # Do not snapshot full H (n can be 1e5+); only track projection matrices.
-        self.H_history = []
-        self.P_history = [P_perp.clone()]
-        return P_perp
+        # y = self.y.clone().detach()
+        return max((self.y == 1).float().mean().item(), (self.y == 0).float().mean().item())
 
     def remove_direction(
         self,
@@ -393,8 +385,11 @@ class INLP_Runner:
         self.H = self.H.cpu().contiguous().view(self.H.shape[0], -1)
         self.y = self.y.cpu().contiguous().view(-1)
         chance_acc = self.language_chance_accuracy()
-        P_perp = self._init_projection()
-        d = self.H.shape[1]
+        # P_perp = self._init_projection()
+        self.d = self.H.shape[1]
+        self.P_perp = torch.eye(self.d, dtype=self.H.dtype)
+        self.H_history = []
+        self.P_history = [self.P_perp.clone().detach()]
 
         P_lang_rows: list[torch.Tensor] = []
         accs: list[float] = []
