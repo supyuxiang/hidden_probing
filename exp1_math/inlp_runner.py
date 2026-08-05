@@ -480,21 +480,16 @@ class INLP_Runner:
 # Data loading
 # ---------------------------------------------------------------------------
 
-def parse_layer_indices(arg: str, layer_keys: list[int]) -> list[int]:
-    """Resolve --layer_indices: 'all' | '1,2,3' | '5' against available keys."""
-    arg = arg.strip()
-    keys = sorted(layer_keys)
+def parse_layer_indices(arg: str, common_layers: list[int]) -> list[int]:
+    """Resolve --layer_indices: 'all' | '1,2,3' | '5' against common layers."""
+    arg = arg.strip(),lower()
     if arg == 'all':
-        return keys
+        return common_layers
     if ',' in arg:
-        wanted = sorted(int(x) for x in arg.split(','))
+        wanted = [int(x) for x in arg.split(',')]
     else:
         wanted = [int(arg)]
-    missing = [i for i in wanted if i not in keys]
-    if missing:
-        print(f'layer_indices not in hiddens: {missing}')
-        raise KeyError(f'layer_indices not in hiddens: {missing}')
-    return wanted
+    return [i for i in wanted if i in common_layers]
 
 
 def load_hiddens(path: str | Path) -> dict[int, torch.Tensor]:
@@ -525,7 +520,8 @@ def discover_layer_keys_and_counts(
         counts[lang] = n
         del obj
         gc.collect()
-    common_layers = sorted(set.intersection(*key_sets))
+        torch.cuda.empty_cache()
+    common_layers: list[int] = sorted(set.intersection(*key_sets))
     print(f'[data] langs={langs} counts={counts} common_layers={len(common_layers)}')
     return common_layers, counts, paths
 
@@ -826,7 +822,7 @@ def main():
     common_layers, counts, paths = discover_layer_keys_and_counts(
         hs_dir, langs, args.hs_template,
     )
-    layer_indices = parse_layer_indices(args.layer_indices, layer_keys=common_layers)
+    layer_indices = parse_layer_indices(args.layer_indices, common_layers=common_layers)
 
     # load rewards for capbility probing
     rewards = load_multilingual_rewards(
