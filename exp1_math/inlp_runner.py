@@ -812,6 +812,10 @@ def run_single_layer(
 
     return metrics
 
+# TODO: add plt_fig function
+def plt_fig():
+    pass
+
 
 def main():
     args = set_args()
@@ -895,6 +899,8 @@ def main():
         writer.writerows(all_rows)
     print(f'\n[INLP] all targets done. summary -> {summary_path}')
     print(f'[INLP] counts={counts}')
+
+    plt_fig()
 
     print('all done!')
 
