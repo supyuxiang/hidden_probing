@@ -18,7 +18,7 @@ Returns:
   H_proj  : (n, d) hidden states after removing all identified language directions.
   P_perp  : (d, d) cumulative projection P_1 @ ... @ P_T (apply to fresh H with H @ P_perp).
   P_lang  : (k, d) stacked removed direction vectors w_i (rowspace = language subspace).
-  accs    : list[float] per-iteration classifier accuracy (information removed).
+  acc_ls    : list[float] per-iteration classifier accuracy (information removed).
 """
 
 import argparse
@@ -117,6 +117,7 @@ class INLP_Runner:
         self.H = H.float().contiguous().view(H.shape[0], -1)
         self.y = y.long().contiguous().view(-1)
         assert self.H.shape[0] == self.y.shape[0]
+        self.language_chance_acc = self.language_chance_accuracy()
 
         self.T = T
         self.epochs_per_iter = epochs_per_iter
@@ -146,6 +147,11 @@ class INLP_Runner:
     
     def _init_swanlab(self):
         pass
+    
+    def language_chance_accuracy(self) -> float:
+        """Majority-class accuracy (the INLP convergence target)."""
+        # y = self.y.clone().detach()
+        return max((self.y == 1).float().mean().item(), (self.y == 0).float().mean().item())
 
     # for language classification
     def build_loss_fn(self):
@@ -262,10 +268,6 @@ class INLP_Runner:
         norm_sq = (w.T @ w).clamp_min(1e-12)
         return torch.eye(d, dtype=w.dtype, device=w.device) - (w @ w.T) / norm_sq
 
-    def language_chance_accuracy(self) -> float:
-        """Majority-class accuracy (the INLP convergence target)."""
-        # y = self.y.clone().detach()
-        return max((self.y == 1).float().mean().item(), (self.y == 0).float().mean().item())
 
     def remove_direction(
         self,
@@ -379,12 +381,11 @@ class INLP_Runner:
             epoch_bar.set_postfix(val_acc=f'{val_acc:.4f}', refresh=False)
         return val_acc
 
-
+    # NOTE: run inlp procedure (train classifier and remove directions, iteratively)
     def inlp(self):
         # Keep large H on CPU; only classifier / P live on self.device.
         self.H = self.H.cpu().contiguous().view(self.H.shape[0], -1)
         self.y = self.y.cpu().contiguous().view(-1)
-        chance_acc = self.language_chance_accuracy()
         # P_perp = self._init_projection()
         self.d = self.H.shape[1]
         self.P_perp = torch.eye(self.d, dtype=self.H.dtype)
@@ -392,7 +393,7 @@ class INLP_Runner:
         self.P_history = [self.P_perp.clone().detach()]
 
         w_ls: list[torch.Tensor] = [] # list of protected directions
-        accs: list[float] = [] # list of accuracies
+        acc_ls: list[float] = [] # list of accuracies
 
         iter_bar = tqdm(range(1, self.T + 1), desc='INLP iters', leave=False, dynamic_ncols=True)
         for t in iter_bar:
@@ -400,15 +401,15 @@ class INLP_Runner:
             if t > 1:
                 self._rebuild_for_H()
             _, _, acc = self.train_language_classifier(desc=f'epochs[iter {t}/{self.T}]')
-            accs.append(acc)
+            acc_ls.append(acc)
             iter_bar.set_postfix(
                 acc=f'{acc:.4f}',
-                chance=f'{chance_acc:.4f}',
+                chance=f'{self.language_chance_acc:.4f}',
                 removed=len(w_ls),
                 refresh=False,
             )
 
-            if acc <= chance_acc + self.chance_tolerance:
+            if acc <= self.language_chance_acc + self.chance_tolerance:
                 iter_bar.set_postfix(
                     acc=f'{acc:.4f}',
                     status='converged',
@@ -418,25 +419,36 @@ class INLP_Runner:
                 print_if_verbose(
                     self.verbose,
                     f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} '
-                    f'(chance={chance_acc:.4f}) -> converged, stop'
+                    f'(chance={self.language_chance_acc:.4f}) -> converged, stop'
                 )
                 break
 
             w = self.language_classifier.query_weight().float().cpu()  # (d,)
             self.remove_direction(w)
             w_ls.append(w.detach().cpu())
+
+            del w
+            gc.collect()
+            torch.cuda.empty_cache()
+
             print_if_verbose(
                 self.verbose,
                 f'[INLP] iter {t}/{self.T} | clf_acc={acc:.4f} '
-                f'(chance={chance_acc:.4f}) -> remove direction d={w.numel()}'
+                f'(chance={self.language_chance_acc:.4f}) -> remove direction d={w.numel()}'
             )
 
+        # stack all protected directions into a single tensor
         w_stacked = (
             torch.stack(w_ls, dim=0)
             if w_ls
             else torch.empty((0, self.d), dtype=self.H.dtype)
         )
-        return self.H, self.P_perp.cpu(), w_stacked, accs
+
+        del w_ls
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return self.H, self.P_perp.cpu(), w_stacked, acc_ls
 
     def fresh_language_classifier_accuracy(self) -> float:
         """Train a fresh linear probe on projected H; success => near chance."""
@@ -444,21 +456,21 @@ class INLP_Runner:
         _, _, acc = self.train_language_classifier(desc='fresh probe epochs')
         return acc
 
+    #NOTE: main of the INLP runner
     def run(self):
-        H_proj, P_perp, w_stacked, accs = self.inlp()
+        H_proj, P_perp, w_stacked, acc_ls = self.inlp()
 
-        chance_acc = self.language_chance_accuracy()
-        print(f'\n[INLP-run] iters run: {len(accs)}')
-        print(f'[INLP-run] acc per iter: {[round(a, 4) for a in accs]}')
+        print(f'\n[INLP-run] iters run: {len(acc_ls)}')
+        print(f'[INLP-run] acc per iter: {[round(a, 4) for a in acc_ls]}')
         print(f'[INLP-run] removed directions: {w_stacked.shape[0]} (d={H_proj.shape[1]})')
 
         acc_after = self.fresh_language_classifier_accuracy()
         print_if_verbose(
             self.verbose,
             f'[INLP-run] fresh language classifier acc after INLP: {acc_after:.4f} '
-            f'(chance={chance_acc:.4f})'
+            f'(chance={self.language_chance_acc:.4f})'
         )
-        return H_proj, P_perp, w_stacked, accs, acc_after
+        return H_proj, P_perp, w_stacked, acc_ls, acc_after
 
 
 # ---------------------------------------------------------------------------
@@ -680,7 +692,6 @@ def run_single_layer(
     target_lang: str,
     layer_idx: int,
     args: argparse.Namespace,
-    chance_acc: float,
     n_pos: int,
     n_neg: int,
 ) -> dict:
@@ -704,7 +715,7 @@ def run_single_layer(
         split_ratio=args.split_ratio,
         seed=args.seed,
     )
-    H_proj, P_perp, w_stacked, accs, acc_after = inlp_runner.run()
+    H_proj, P_perp, w_stacked, acc_ls, acc_after = inlp_runner.run()
 
     # --- capability probe (paper Sec 4.2 / Eq. 3 Δcap) ---
     cap_acc_before = float('nan')
@@ -756,24 +767,21 @@ def run_single_layer(
     torch.save(P_perp, out_dir / f'P_perp_layer{layer_idx}.pt')
     torch.save(w_stacked, out_dir / f'w_stacked_layer{layer_idx}.pt')
     torch.save(
-        torch.tensor(accs, dtype=torch.float32),
-        out_dir / f'accs_layer{layer_idx}.pt',
+        torch.tensor(acc_ls, dtype=torch.float32),
+        out_dir / f'acc_ls_layer{layer_idx}.pt',
     )
 
-    del inlp_runner, H_proj
-    gc.collect()
-    torch.cuda.empty_cache()
 
     metrics = {
         'target_lang': target_lang,
         'layer': layer_idx,
-        'n_iters': len(accs),
+        'n_iters': len(acc_ls),
         'n_removed': int(w_stacked.shape[0]),
         'd': int(H.shape[1]),
-        'acc_first': accs[0] if accs else float('nan'),
-        'acc_last': accs[-1] if accs else float('nan'),
+        'acc_first': acc_ls[0] if acc_ls else float('nan'),
+        'acc_last': acc_ls[-1] if acc_ls else float('nan'),
         'acc_after': acc_after,
-        'chance_acc': chance_acc,
+        'chance_acc': inlp_runner.language_chance_acc,
         'n_pos': n_pos,
         'n_neg': n_neg,
         'cap_acc_before': cap_acc_before,
@@ -781,6 +789,11 @@ def run_single_layer(
         'delta_cap': delta_cap,
         'cap_scope': args.cap_scope,
     }
+    
+    del inlp_runner, H_proj
+    gc.collect()
+    torch.cuda.empty_cache()
+
     return metrics
 
 
@@ -833,7 +846,6 @@ def main():
             target_id = LANG2ID[target]
             y_labels = (lang_ids == target_id).long() # build 0-1 labels for language classification
             n_pos, n_neg = int((y_labels == 1).sum()), int((y_labels == 0).sum())
-            chance_acc = max(n_pos, n_neg) / len(y_labels) # for chance accuracy, as baseline
             row = run_single_layer(
                 H=H,
                 y_labels=y_labels,
@@ -842,7 +854,6 @@ def main():
                 target_lang=target,
                 layer_idx=layer_idx,
                 args=args,
-                chance_acc=chance_acc,
                 n_pos=n_pos,
                 n_neg=n_neg,
             )
