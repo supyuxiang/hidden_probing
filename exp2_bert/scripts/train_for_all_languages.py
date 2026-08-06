@@ -24,7 +24,7 @@ def format_config(lang: str):
     # update experiment name and save dir per language
     cfg.exp_name = f"{cfg.exp_name}_{lang}"
     if 'train' in cfg and 'save_dir' in cfg.train:
-        cfg.train.save_dir = str(Path(cfg.train.save_dir).parent / 'bert_tuned_with' + f"_{lang}")
+        cfg.train.save_dir = str(Path(cfg.train.save_dir).parent / f'bert_tuned_with_{lang}')
 
     return cfg
 

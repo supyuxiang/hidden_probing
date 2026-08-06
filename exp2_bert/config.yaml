@@ -15,14 +15,14 @@ model:
   max_length: 128
 
 optimizer:
-  lr: 2.0e-5
-  weight_decay: 0.01
+  lr: 1e-4
+  weight_decay: 1e-5
 
 scheduler:
-  T_max: 10
+  T_max: 2
   eta_min: 1.0e-6
 
 train:
-  batch_size: 32
-  num_epochs: 10
+  batch_size: 128
+  num_epochs: 2
   save_dir: /root/autodl-tmp/exp2_bert/ckpt/bert_tuned_with_en

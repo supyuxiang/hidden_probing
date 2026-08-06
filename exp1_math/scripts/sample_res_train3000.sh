@@ -27,6 +27,7 @@ for model in "${models[@]}"; do
             --temperature 1.5 \
             --top_p 0.95 \
             --top_k 50 \
-            --n 8
+            --n 8 \
+            --gpu_memory_utilization 0.95
     done
 done

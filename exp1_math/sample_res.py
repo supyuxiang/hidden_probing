@@ -104,6 +104,7 @@ def parse_args():
     p.add_argument('--language_type',type=str,default='en')
     p.add_argument('--n',type=int,default=8,help='number of samples per question')
     p.add_argument('--seed',type=int,default=42)
+    p.add_argument('--gpu_memory_utilization',type=float,default=0.95)
     return p.parse_args()
 
 
@@ -122,7 +123,7 @@ def main():
     llm = LLM(
         model=args.model_path,
         tensor_parallel_size=1,
-        gpu_memory_utilization=0.95,
+        gpu_memory_utilization=args.gpu_memory_utilization,
     )
     sp = SamplingParams(
         temperature=args.temperature,

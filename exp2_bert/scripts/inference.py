@@ -10,7 +10,7 @@ Example:
   # or resolve data path by language (SST-2 convention):
   python /root/hidden_prob/exp2_bert/scripts/inference.py \
       --ckpt_path /root/autodl-tmp/exp2_bert/ckpt/bert_tuned_with_en/best.pt \
-      --language zh
+      --language vi
 """
 
 
