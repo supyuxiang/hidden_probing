@@ -5,7 +5,6 @@
   
 """
 
-from __future__ import annotations
 
 import json
 import random
@@ -21,6 +20,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import BertModel, BertTokenizer
+import gc
 
 
 def set_seed(seed: int = 42) -> None:
@@ -34,7 +34,7 @@ def get_pooling_fn(pooling_mode: str):
     if pooling_mode == "cls":
         def _cls(hs: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
             # hs: (B, T, H)
-            return hs[:, 0, :]
+            return hs[:, 0, :] # B, H
 
         return _cls
 
@@ -60,6 +60,7 @@ class Classifier_Bert(nn.Module):
         pooling_mode: str = "cls",
         freeze_bert: bool = False,
         max_length: int = 512,
+        # batch_size: int = 16,
         device: torch.device | None = None,
     ):
         super().__init__()
@@ -68,6 +69,8 @@ class Classifier_Bert(nn.Module):
         self.layer_idx = layer_idx
         self.pooling_mode = pooling_mode
         self.max_length = max_length
+        self.freeze_bert = freeze_bert
+        # self.batch_size = batch_size
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if self.device.type == 'cpu': print('using cpu')
 
@@ -90,7 +93,7 @@ class Classifier_Bert(nn.Module):
         if self.classifier_head.bias is not None:
             nn.init.zeros_(self.classifier_head.bias)
 
-        if freeze_bert:
+        if self.freeze_bert:
             for p in self.bert.parameters():
                 p.requires_grad = False
 
@@ -115,6 +118,9 @@ class Classifier_Bert(nn.Module):
         hs = o.hidden_states[self.layer_idx]  # (B, T, H)
         pooled = self.pooling_fn(hs, attention_mask)  # (B, H)
         logits = self.classifier_head(pooled)  # (B, C)
+        del o, hs, pooled
+        gc.collect()
+        torch.cuda.empty_cache()
         return logits
 
 
@@ -124,39 +130,25 @@ class BertDataset(Dataset):
     def __init__(
         self,
         data_path: str | Path,
-        text_field: str = "question",
-        label_field: str = "subject",
-        label2id: dict[str, int] | None = None,
+        text_field: str = "sentence",
+        label_field: str = "label",
     ):
-        super().__init__()
+        super(BertDataset, self).__init__()
+        self.data_path = data_path
+        self.text_field = text_field
+        self.lanel_field = label_field
         data_path = Path(data_path)
         with open(data_path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+            raw_data = json.load(f) # list[dict]
         assert isinstance(raw, list) and len(raw) > 0
 
         self.texts: list[str] = []
-        labels_raw: list[str] = []
-        for item in raw:
-            if text_field == "qa":
-                text = f"{item['question']} {item['answer']}"
-            else:
-                text = str(item[text_field])
+        self.labels: list[int] = []
+        for item in raw_data:
+            text = item[text_field]
             self.texts.append(text)
-            labels_raw.append(str(item[label_field]))
-
-        if label2id is None:
-            classes = sorted(set(labels_raw))
-            self.label2id = {c: i for i, c in enumerate(classes)}
-        else:
-            self.label2id = dict(label2id)
-            missing = set(labels_raw) - set(self.label2id)
-            assert not missing, f"labels missing from label2id: {missing}"
-
-        self.id2label = {i: c for c, i in self.label2id.items()}
-        self.labels = torch.tensor(
-            [self.label2id[x] for x in labels_raw], dtype=torch.long
-        )
-
+            self.lanels.append(item[label_field])
+        
     def __len__(self) -> int:
         return len(self.texts)
 
@@ -175,8 +167,7 @@ class Trainer:
         set_seed(int(self.config.seed))
         self.generator = torch.Generator().manual_seed(int(self.config.seed))
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if self.device.type == "cpu":
-            print("using cpu!")
+        if self.device.type == "cpu": print("using cpu!")
 
         self.build_dataloader()
         self.build_model()
