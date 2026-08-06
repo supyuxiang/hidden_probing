@@ -1,13 +1,13 @@
 # # use 
 
 models=(/root/autodl-tmp/models/Qwen2.5-3B-Instruct \
+        /root/autodl-tmp/models/Qwen3-8B \
 		/root/autodl-tmp/models/Qwen2.5-14B-Instruct \
-		/root/autodl-tmp/models/Qwen3-8B \
 		/root/autodl-tmp/models/Llama3.2-8B-Instruct)
 
 languages=(en zh es vi tr)
 
-batch_size=8
+batch_size=4
 layer_indices=all
 pooling_mode=last
 

@@ -2,8 +2,8 @@ seed: 42
 exp_name: fine_tuning_bert4classification
 
 dataset:
-  train_path: /root/hidden_prob/data/math/train.json
-  test_path: /root/hidden_prob/data/math/test.json
+  train_path: /root/autodl-tmp/data/text_classification/glue_sst2/train.json
+  test_path: /root/autodl-tmp/data/text_classification/glue_sst2/validation.json
   text_field: sentence 
   label_field: label  
 
