@@ -9,10 +9,10 @@ dataset:
 
 model:
   model_path: /root/autodl-tmp/models/bert-base-multilingual-cased
-  layer_idx: -1          # -1 = last transformer layer; 0 = embeddings
+  layer_idx: 9          # -1 = last transformer layer; 0 = embeddings. 0, 1-12都可以
   pooling_mode: cls      # cls | mean
   freeze_bert: false
-  max_length: 512
+  max_length: 128
 
 optimizer:
   lr: 2.0e-5
@@ -24,5 +24,5 @@ scheduler:
 
 train:
   batch_size: 32
-  num_epochs: 3
+  num_epochs: 10
   save_dir: /root/autodl-tmp/exp2_bert/ckpt/bert_math_subject_cls

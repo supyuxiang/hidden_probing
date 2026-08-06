@@ -333,7 +333,7 @@ class Trainer:
                 self.save_checkpoint(save_dir / "best.pt")
                 print(f"  -> new best eval_acc={best_acc:.4f}, saved best.pt")
 
-        self.save_checkpoint(save_dir / "last.pt")
+        self.save_checkpoint(save_dir / "last_epoch.pt")
         print(f"[done] best_eval_acc={best_acc:.4f} save_dir={save_dir}")
 
 
