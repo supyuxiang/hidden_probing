@@ -3,17 +3,16 @@ Eval a fine-tuned BERT classifier on a (possibly multilingual) JSON dataset.
 
 Example:
   source /root/autodl-tmp/miniconda3/bin/activate bert1
-  python /root/hidden_prob/exp2_bert/scripts/inference.py \\
-      --ckpt_path /root/autodl-tmp/exp2_bert/ckpt/bert_tuned_with_en/best.pt \\
+  python /root/hidden_prob/exp2_bert/scripts/inference.py \
+      --ckpt_path /root/autodl-tmp/exp2_bert/ckpt/bert_tuned_with_en/best.pt \
       --data_path /root/autodl-tmp/data/text_classification/glue_sst2/validation_zh.json
 
   # or resolve data path by language (SST-2 convention):
-  python /root/hidden_prob/exp2_bert/scripts/inference.py \\
-      --ckpt_path /root/autodl-tmp/exp2_bert/ckpt/bert_tuned_with_en/best.pt \\
+  python /root/hidden_prob/exp2_bert/scripts/inference.py \
+      --ckpt_path /root/autodl-tmp/exp2_bert/ckpt/bert_tuned_with_en/best.pt \
       --language zh
 """
 
-from __future__ import annotations
 
 import argparse
 import json
