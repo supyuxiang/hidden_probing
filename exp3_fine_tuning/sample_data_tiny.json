@@ -1,0 +1,10 @@
+[
+  {
+    "question": "What is 2 + 2?",
+    "golden_res": "2 + 2 = 4. The answer is 4."
+  },
+  {
+    "question": "Name the capital of France.",
+    "golden_res": "The capital of France is Paris."
+  }
+]
