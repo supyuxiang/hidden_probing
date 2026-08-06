@@ -149,6 +149,8 @@ class BertDataset(Dataset):
             self.texts.append(text)
             self.lanels.append(item[label_field])
         
+        self.num_classes = len(set(list(self.labels)))
+        
     def __len__(self) -> int:
         return len(self.texts)
 
@@ -188,12 +190,11 @@ class Trainer:
             ds_cfg.test_path,
             text_field=ds_cfg.text_field,
             label_field=ds_cfg.label_field,
-            label2id=self.dataset_train.label2id,
         )
-        self.num_classes = len(self.dataset_train.label2id)
+        self.num_classes = self.dataset_train.num_classes
         print(
             f"[data] train={len(self.dataset_train)} test={len(self.dataset_test)} "
-            f"num_classes={self.num_classes} labels={self.dataset_train.label2id}"
+            f"num_classes={self.num_classes} labels={list(set((self.dataset_train.labels)))}"
         )
 
         self.dataloader_train = DataLoader(
@@ -222,11 +223,11 @@ class Trainer:
             device=self.device,
         )
         self.trainable_params = [p for p in self.model.parameters() if p.requires_grad]
-        n_train = sum(p.numel() for p in self.trainable_params)
-        n_all = sum(p.numel() for p in self.model.parameters())
+        self.num_train_params = sum(p.numel() for p in self.trainable_params)
+        self.num_all_params = sum(p.numel() for p in self.model.parameters())
         print(
             f"[model] layer_idx={self.model.layer_idx} pooling={self.model.pooling_mode} "
-            f"freeze_bert={mcfg.freeze_bert} trainable={n_train}/{n_all}"
+            f"freeze_bert={mcfg.freeze_bert} trainable={self.num_train_params}/{self.num_all_params}"
         )
 
     def build_optimizer(self):
@@ -248,14 +249,16 @@ class Trainer:
 
     @torch.no_grad()
     def _accuracy(self, logits: torch.Tensor, labels: torch.Tensor) -> float:
-        pred = logits.argmax(dim=-1)
-        return (pred == labels).float().mean().item()
+        # logits: batch_size, output_dim
+        # labels: batch_size,
+        while len(labels.shape) != 1:
+            labels = labels.squeeze(-1) # to make sure the shape of labels is (batch_size,)
+        pred = logits.argmax(dim=-1) # batch_size,
+        return (pred == labels).float().mean().item() # acc
 
     def train_epoch(self) -> tuple[float, float]:
         self.model.train()
-        # if bert frozen, still need train mode for dropout in head only;
-        # keep bert in eval to disable its dropout when frozen.
-        if self.config.model.freeze_bert:
+        if self.model.freeze_bert:
             self.model.bert.eval()
 
         total_loss = 0.0
@@ -302,7 +305,6 @@ class Trainer:
         torch.save(
             {
                 "model_state_dict": self.model.state_dict(),
-                "label2id": self.dataset_train.label2id,
                 "config": OmegaConf.to_container(self.config, resolve=True),
             },
             path,
