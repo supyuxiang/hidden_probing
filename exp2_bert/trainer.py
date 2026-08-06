@@ -136,18 +136,19 @@ class BertDataset(Dataset):
         super(BertDataset, self).__init__()
         self.data_path = data_path
         self.text_field = text_field
-        self.lanel_field = label_field
+        self.label_field = label_field
         data_path = Path(data_path)
         with open(data_path, "r", encoding="utf-8") as f:
             raw_data = json.load(f) # list[dict]
-        assert isinstance(raw, list) and len(raw) > 0
+        assert isinstance(raw_data, list) and len(raw_data) > 0
 
         self.texts: list[str] = []
         self.labels: list[int] = []
         for item in raw_data:
             text = item[text_field]
             self.texts.append(text)
-            self.lanels.append(item[label_field])
+            # ensure labels are integers
+            self.labels.append(int(item[label_field]))
         
         self.num_classes = len(set(list(self.labels)))
         
@@ -158,9 +159,10 @@ class BertDataset(Dataset):
         return self.texts[idx], self.labels[idx]
 
 
-def collate_fn(batch: list[tuple[str, torch.Tensor]]):
+def collate_fn(batch: list[tuple[str, int]]):
     texts, labels = zip(*batch)
-    return list(texts), torch.stack(list(labels), dim=0)
+    labels_tensor = torch.tensor(list(labels), dtype=torch.long)
+    return list(texts), labels_tensor
 
 
 class Trainer:
