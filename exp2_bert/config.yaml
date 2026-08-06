@@ -1,11 +1,11 @@
 seed: 42
-exp_name: bert_math_subject_cls
+exp_name: fine_tuning_bert4classification
 
 dataset:
   train_path: /root/hidden_prob/data/math/train.json
   test_path: /root/hidden_prob/data/math/test.json
-  text_field: question   # question | answer | qa
-  label_field: subject   # subject | level
+  text_field: sentence 
+  label_field: label  
 
 model:
   model_path: /root/autodl-tmp/models/bert-base-multilingual-cased
@@ -19,10 +19,10 @@ optimizer:
   weight_decay: 0.01
 
 scheduler:
-  T_max: 3
+  T_max: 10
   eta_min: 1.0e-6
 
 train:
   batch_size: 32
   num_epochs: 10
-  save_dir: /root/autodl-tmp/exp2_bert/ckpt/bert_math_subject_cls
+  save_dir: /root/autodl-tmp/exp2_bert/ckpt/bert_tuned_with_en
