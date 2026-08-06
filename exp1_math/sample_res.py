@@ -122,7 +122,7 @@ def main():
     llm = LLM(
         model=args.model_path,
         tensor_parallel_size=1,
-        gpu_memory_utilization=0.9,
+        gpu_memory_utilization=0.95,
     )
     sp = SamplingParams(
         temperature=args.temperature,
