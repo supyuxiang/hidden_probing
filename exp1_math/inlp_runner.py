@@ -730,7 +730,12 @@ def run_single_layer(
         torch.tensor(acc_ls, dtype=torch.float32),
         out_dir / f'acc_ls_layer{layer_idx}.pt',
     )
-    del P_perp, w_stacked, acc_ls
+    del P_perp
+    n_iters = len(acc_ls)
+    n_removed = int(w_stacked.shape[0])
+    acc_first = acc_ls[0] if acc_ls else float('nan')
+    acc_last = acc_ls[-1] if acc_ls else float('nan')
+    del w_stacked, acc_ls
 
     # NOTE: 构造capability probe的输入数据,若scope为target,则只使用target语言的样本,否则使用所有样本.
     #NOTE: default is target.
@@ -790,11 +795,11 @@ def run_single_layer(
     metrics = {
         'target_lang': target_lang,
         'layer': layer_idx,
-        'n_iters': len(acc_ls),
-        'n_removed': int(w_stacked.shape[0]),
+        'n_iters': n_iters,
+        'n_removed': n_removed,
         'd': int(H.shape[1]),
-        'acc_first': acc_ls[0] if acc_ls else float('nan'),
-        'acc_last': acc_ls[-1] if acc_ls else float('nan'),
+        'acc_first': acc_first,
+        'acc_last': acc_last,
         'acc_after': acc_after,
         'chance_acc': inlp_runner.language_chance_acc,
         'n_pos': n_pos,
