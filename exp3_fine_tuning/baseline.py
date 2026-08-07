@@ -208,7 +208,7 @@ def main() -> None:
 
             res_ls = [r["res"] for r in rows]
             answer_ls = [r["answer"] for r in rows]
-            print(f"[judge] {model_name} / {lang} | N={len(rows)}")
+            
             judge_bools, rewards = judge_math(
                 res_ls=res_ls,
                 answer_ls=answer_ls,
@@ -239,7 +239,7 @@ def main() -> None:
                 }
             )
 
-    del judge_llm
+    del judge_llm, judge_tok
     gc.collect()
     torch.cuda.empty_cache()
 
