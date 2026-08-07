@@ -35,13 +35,23 @@ user_prompt4math = (
 )
 
 # judge4math
-system_prompt4judge = 'You are a math expert.'
+system_prompt4judge = (
+    'You are a careful math judge. Verify whether a student solution matches the correct answer. '
+    'Focus on mathematical equivalence of the final answer; ignore minor formatting issues or missing units.'
+)
 user_prompt4judge = (
-    'I have a full chain-of-thought solution to a math problem that needs verification.'
-    'Please read the entire reasoning process and final conclusion, then decide whether the'
-    'solution is correct. Ignore minor formatting issues or missing units if the math is correct.'
+    'I have a full chain-of-thought solution to a math problem that needs verification.\n\n'
     'Correct answer: {answer}\n\n'
-    'Solution:{res}\n\n'
-    'Just answer in one word: "Correct" or "Incorrect", no other words.'
+    'Solution:\n{res}\n\n'
+    'Please briefly check:\n'
+    '1) What final answer does the solution claim?\n'
+    '2) Is that answer mathematically equivalent to the correct answer?\n'
+    '3) If the final answer is missing, incomplete, or clearly wrong, mark Incorrect.\n\n'
+    'You may briefly reason step by step first (keep it short and simple). After your reasoning, output the final judgment '
+    'on its own last line in exactly one of these two forms:\n'
+    'Verdict: Correct\n'
+    'or\n'
+    'Verdict: Incorrect\n'
+    'Do not put any other text after the Verdict line.'
 )
 #

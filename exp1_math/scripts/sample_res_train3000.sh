@@ -11,6 +11,10 @@ data_dir=/root/hidden_prob/data/math
 for model in "${models[@]}"; do
     model_name=$(basename "$model")
     save_dir=/root/hidden_prob/exp1_math/sampled/"$model_name"
+    tokens=1024
+    if [ "$model" = "/root/autodl-tmp/models/Qwen3-8B" ]; then
+        tokens=4096
+    fi
     mkdir -p "$save_dir"
     for language in en zh es vi tr; do
         if [ "$language" = "en" ]; then
@@ -21,9 +25,9 @@ for model in "${models[@]}"; do
         CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/sample_res.py \
             --model_path "$model" \
             --data_path "$data_path" \
-            --save_path "$save_dir"/res_math_train3000_${language}_n8_t1.5_tokens1024.json \
+            --save_path "$save_dir"/res_math_train3000_${language}_n8_t1.5_tokens${tokens}.json \
             --language_type ${language} \
-            --max_tokens 1024 \
+            --max_tokens $tokens \
             --temperature 1.5 \
             --top_p 0.95 \
             --top_k 50 \
@@ -31,3 +35,35 @@ for model in "${models[@]}"; do
             --gpu_memory_utilization 0.95
     done
 done
+
+
+
+
+
+# models=/root/autodl-tmp/models/Qwen3-8B 
+
+# data_dir=/root/hidden_prob/data/math
+
+# for model in "${models[@]}"; do
+#     model_name=$(basename "$model")
+#     save_dir=/root/hidden_prob/exp1_math/sampled/"$model_name"
+#     mkdir -p "$save_dir"
+#     for language in en zh es vi tr; do
+#         if [ "$language" = "en" ]; then
+#             data_path="${data_dir}/train_split3000.json"
+#         else
+#             data_path="${data_dir}/train_${language}_split3000.json"
+#         fi
+#         CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/sample_res.py \
+#             --model_path "$model" \
+#             --data_path "$data_path" \
+#             --save_path "$save_dir"/res_math_train3000_${language}_n8_t1.5_tokens4096.json \
+#             --language_type ${language} \
+#             --max_tokens 4096 \
+#             --temperature 1.5 \
+#             --top_p 0.95 \
+#             --top_k 50 \
+#             --n 8 \
+#             --gpu_memory_utilization 0.95
+#     done
+# done
