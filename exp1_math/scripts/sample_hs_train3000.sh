@@ -3,8 +3,8 @@
 
 models=(/root/autodl-tmp/models/Qwen2.5-3B-Instruct \
         /root/autodl-tmp/models/Qwen3-8B \
-		/root/autodl-tmp/models/Qwen2.5-14B-Instruct \
-		/root/autodl-tmp/models/Llama3.2-8B-Instruct)
+		/root/autodl-tmp/models/Llama3.2-8B-Instruct \
+		/root/autodl-tmp/models/Qwen2.5-14B-Instruct)
 
 languages=(en zh es vi tr)
 
