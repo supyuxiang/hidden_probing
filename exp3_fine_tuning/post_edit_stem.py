@@ -20,8 +20,6 @@ python /root/hidden_prob/exp3_fine_tuning/post_edit_stem.py \
     
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import re

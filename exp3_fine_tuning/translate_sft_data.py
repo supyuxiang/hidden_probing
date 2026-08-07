@@ -258,10 +258,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tgt_lang", type=str, required=True, choices=[c for c in LANG_NAME if c != "en"])
     p.add_argument("--translate_question", action="store_true", default=True)
     p.add_argument("--no_translate_question", action="store_false", dest="translate_question")
-    p.add_argument("--temperature", type=float, default=0.2)
+    p.add_argument("--temperature", type=float, default=0.1)
     p.add_argument("--top_p", type=float, default=0.95)
     p.add_argument("--top_k", type=int, default=50)
-    p.add_argument("--max_tokens", type=int, default=4096)
+    p.add_argument("--max_tokens", type=int, default=1024)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--gpu_memory_utilization", type=float, default=0.90)
     p.add_argument("--tensor_parallel_size", type=int, default=1)
@@ -274,11 +274,7 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     args = parse_args()
-    if args.src_lang == args.tgt_lang:
-        raise ValueError("src_lang and tgt_lang must differ")
-
     from transformers import set_seed as hf_set_seed
-
     hf_set_seed(args.seed)
 
     rows = load_rows(args.data_path, args.limit)
@@ -313,7 +309,6 @@ def main():
     if args.max_model_len is not None:
         llm_kwargs["max_model_len"] = args.max_model_len
 
-    print(f"[vllm] loading translator {args.model_path} ...")
     llm = LLM(**llm_kwargs)
     sp = SamplingParams(
         temperature=args.temperature,
