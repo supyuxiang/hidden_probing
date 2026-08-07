@@ -11,6 +11,7 @@ import math
 from torch.utils.data import Dataset, DataLoader
 import hydra
 import argparse
+from dataclasses import dataclass
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0,str(ROOT))
@@ -32,6 +33,14 @@ class SFTDataset(Dataset):
     
 def colalte_fn(batch):
     return
+
+
+@dataclass
+class LoraConfig:
+    lora_rank:int
+    lora_alpha:int
+
+
 
 
 
