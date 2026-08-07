@@ -13,10 +13,14 @@ for model in "${models[@]}"; do
     model_name=$(basename "$model")
     data_dir=/root/hidden_prob/exp1_math/sampled/"$model_name"
     save_dir=/root/autodl-tmp/exp1_math/judge/"$model_name"
+    tokens=1024
+    if [ "$model" = "/root/autodl-tmp/models/Qwen3-8B" ]; then
+        tokens=4096
+    fi
     mkdir -p "$save_dir"
     for language in en zh es vi tr; do
-        data_path="$data_dir"/res_math_train3000_${language}_n8_t1.5_tokens1024.json
-        save_path="$save_dir"/reward_math_train3000_${language}_n8_t1.5_tokens1024.pt
+        data_path="$data_dir"/res_math_train3000_${language}_n8_t1.5_tokens${tokens}.json
+        save_path="$save_dir"/reward_math_train3000_${language}_n8_t1.5_tokens${tokens}.pt
         CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp1_math/judge.py \
             --judge_model "$judge_model" \
             --data_path "$data_path" \
