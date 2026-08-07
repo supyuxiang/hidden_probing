@@ -47,18 +47,13 @@ LANG_NAME = {
 DEFAULT_TRANSLATOR = "/root/autodl-tmp/models/Qwen2.5-32B-Instruct"
 
 TRANSLATE_SYSTEM = (
-    "You are a professional STEM translator. "
+    "You are a professional translator. "
     "Translate faithfully. Preserve all LaTeX, math expressions, code, "
     "variable names, \\boxed{...}, and markdown structure. "
     "Do not solve the problem or add new content. "
     "Output ONLY the translation."
 )
 
-
-def lang_name(code: str) -> str:
-    if code not in LANG_NAME:
-        raise ValueError(f"unsupported lang={code}; choose from {list(LANG_NAME)}")
-    return LANG_NAME[code]
 
 
 def load_rows(data_path: str | Path, limit: int | None) -> list[dict]:
