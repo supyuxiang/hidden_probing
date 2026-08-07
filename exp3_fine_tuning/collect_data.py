@@ -5,14 +5,15 @@ Default teacher: DeepSeek-R1-Distill-Qwen-32B
 
 Example:
   CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp3_fine_tuning/collect_data.py \
-      --model_path /root/autodl-tmp/models/DeepSeek-R1-Distill-Qwen-32B \
-      --data_path /root/hidden_prob/data/math/train_split3000.json \
-      --save_path /root/autodl-tmp/exp3_sft/teacher/math_en_n4_candidates.json \
-      --language_type en \
-      --n 4 \
-      --temperature 0.6 \
-      --max_tokens 1024 \
-      --gpu_memory_utilization 0.9
+    --model_path /root/autodl-tmp/models/DeepSeek-R1-Distill-Qwen-32B \
+    --data_path /root/hidden_prob/data/math/train_split3000.json \
+    --save_path /root/autodl-tmp/exp3_sft/teacher/math_en_n4_candidates.json \
+    --language_type en \
+    --n 4 \
+    --temperature 0.6 \
+    --max_tokens 4096 \
+    --max_model_len 16384 \
+    --gpu_memory_utilization 0.95
 
 """
 
@@ -66,7 +67,7 @@ def format_prompts(
             {"role": "system", "content": language.system_prompt},
             {"role": "user", "content": user},
         ]
-        prompts.append(
+        formatted.append(
             tokenizer.apply_chat_template(
                 msg,
                 tokenize=False,
@@ -76,17 +77,15 @@ def format_prompts(
     return formatted
 
 
-
 def sample_res(
     data: list[dict],
     llm: LLM,
     sp: SamplingParams,
-    model_path: str,
-    language_type:str,
+    tokenizer: AutoTokenizer,
+    language_type: str,
 ) -> list[dict]:
-
-    question_ls = [item['question'] for item in data]
-    answer_ls = [item['answer'] for item in data]
+    question_ls = [item["question"] for item in data]
+    answer_ls = [item["answer"] for item in data]
 
     formatted_prompts = format_prompts(
         question_ls,
@@ -94,22 +93,18 @@ def sample_res(
         language_type,
     )
 
-    o = llm.generate(
-        formatted_prompts,
-        sp
-    )
-    # o[i].outputs[j].text
+    o = llm.generate(formatted_prompts, sp)
     out = []
-    for question, answer, res_group in zip(question_ls,answer_ls, o):
-        for res in res_group:
-            msg = {
-                'question':question,
-                'golden_res':res,
-                'answer':answer,
+    for question, answer, res_group in zip(question_ls, answer_ls, o):
+        res_ls = [cand.text for cand in res_group.outputs]
+        out.append(
+            {
+                "question": question,
+                "answer": answer,
+                "res_ls": res_ls,
             }
-            out.append(msg)
+        )
     return out
-
 
 
 def save_json(obj, path: str | Path):
@@ -134,7 +129,7 @@ def parse_args() -> argparse.Namespace:
         "--save_path",
         type=str,
         default="/root/autodl-tmp/exp3_sft/teacher/math_en_n4_candidates.json",
-        help="candidates json: list[{question,answer,res_ls,...}]",
+        help="candidates json: list[{question,answer,res_ls}]",
     )
     p.add_argument("--language_type", type=str, default="en", choices=["en", "zh", "es", "vi", "tr"])
     p.add_argument("--n", type=int, default=4, help="samples per question (for later best-of-n)")
@@ -145,7 +140,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--gpu_memory_utilization", type=float, default=0.90)
     p.add_argument("--tensor_parallel_size", type=int, default=1)
-    p.add_argument("--max_model_len", type=int, default=None, help="optional vLLM context cap")
+    p.add_argument(
+        "--max_model_len",
+        type=int,
+        default=8192,
+        help="vLLM context cap; must fit KV cache (R1-32B on ~80G: use 4k~16k, NOT 131k)",
+    )
     p.add_argument("--dtype", type=str, default="bfloat16", help="auto|float16|bfloat16")
     p.add_argument("--limit", type=int, default=None, help="only first N questions (debug)")
     return p.parse_args()
@@ -163,18 +163,14 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-
-    llm_kwargs = dict(
+    llm = LLM(
         model=args.model_path,
         tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
         trust_remote_code=True,
         dtype=args.dtype,
+        max_model_len=args.max_model_len,
     )
-    if args.max_model_len is not None:
-        llm_kwargs["max_model_len"] = args.max_model_len
-
-    llm = LLM(**llm_kwargs)
     sp = SamplingParams(
         temperature=args.temperature,
         top_p=args.top_p,
@@ -188,21 +184,20 @@ def main():
         data=data,
         llm=llm,
         sp=sp,
-        model_path=args.model_path,
+        tokenizer=tokenizer,
         language_type=args.language_type,
     )
 
-    print('sample_res done')
-
+    print("sample_res done")
     save_json(o, args.save_path)
-
     print("all done!")
 
 
-def best_of_n(sft_data_path:str | Path, reward_model_path:str | Path):
+def best_of_n(sft_data_path: str | Path, reward_model_path: str | Path):
     from transformers import AutoModel
+
     sft_data_dir = Path(sft_data_path).parent
-    reward_model = ''
+    reward_model = ""
     pass
 
 
