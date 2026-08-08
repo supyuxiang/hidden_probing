@@ -40,12 +40,9 @@ DEFAULT_TRANSLATOR = "/root/autodl-tmp/models/Qwen2.5-32B-Instruct"
 DEFAULT_DATA_PATH = '/root/hidden_prob/exp3_fine_tuning/teacher/math_en_n2_sft.json'
 DEFAULT_SAVE_DIR = Path("/root/hidden_prob/exp3_fine_tuning/teacher")
 
-TRANSLATE_SYSTEM = (
+SYSTEM_PROMPT4TRANSLATE = (
     "You are a professional translator. "
-    "Translate faithfully. Preserve all LaTeX, math expressions, code, "
-    "variable names, \\boxed{...}, and markdown structure. "
-    "Do not solve the problem or add new content. "
-    "Output ONLY the translation."
+    "Translate faithfully; preserve math/LaTeX/code; output only the translation."
 )
 
 
@@ -86,7 +83,7 @@ def build_translate_prompt(
         f"Text:\n{text}"
     )
     msg = [
-        {"role": "system", "content": TRANSLATE_SYSTEM},
+        {"role": "system", "content": SYSTEM_PROMPT4TRANSLATE},
         {"role": "user", "content": user},
     ]
     return tokenizer.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
