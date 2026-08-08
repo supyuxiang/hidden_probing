@@ -44,6 +44,15 @@ SYSTEM_PROMPT4TRANSLATE = (
     "You are a professional translator. "
     "Translate faithfully; preserve math/LaTeX/code; output only the translation."
 )
+USER_PROMPT4TRANSLATE = (
+    "Translate the following text from {src_lang} to {tgt_lang}.\n"
+    "Requirements:\n"
+    "- Write the translation in {tgt_lang}.\n"
+    "- Keep LaTeX / formulas / \\boxed{...} / code unchanged in structure.\n"
+    "- Do not answer the question; only translate.\n"
+    "- Output the translation only.\n\n"
+    "Text:\n{text}"
+)
 
 
 
@@ -73,14 +82,10 @@ def build_translate_prompt(
     tgt_lang: str,
 ) -> str:
     user = (
-        f"Translate the following text from {LANG_NAME(src_lang)} "
-        f"to {LANG_NAME(tgt_lang)}.\n"
-        "Requirements:\n"
-        f"- Write the translation in {LANG_NAME(tgt_lang)}.\n"
-        "- Keep LaTeX / formulas / \\boxed{{...}} / code unchanged in structure.\n"
-        "- Do not answer the question; only translate.\n"
-        "- Output the translation only.\n\n"
-        f"Text:\n{text}"
+        USER_PROMPT4TRANSLATE
+        .replace("{src_lang}", LANG_NAME[src_lang])
+        .replace("{tgt_lang}", LANG_NAME[tgt_lang])
+        .replace("{text}", text)
     )
     msg = [
         {"role": "system", "content": SYSTEM_PROMPT4TRANSLATE},
