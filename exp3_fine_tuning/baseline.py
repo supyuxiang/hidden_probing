@@ -173,7 +173,7 @@ def main() -> None:
                 max_tokens=args.max_tokens,
                 seed=args.seed,
             )
-            rollout_path = model_out / f"rollout_test_{lang}_greedy_tokens{tokens}.json"
+            rollout_path = model_out / f"rollout_test_{lang}_greedy_tokens{args.max_tokens}.json"
             save_json(rows, rollout_path)
 
         del llm, tokenizer, rows
