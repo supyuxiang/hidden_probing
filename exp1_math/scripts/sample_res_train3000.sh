@@ -2,9 +2,9 @@
 # Sample responses on the fixed train_split3000 subsets (3000 questions / lang).
 
 models=(/root/autodl-tmp/models/Qwen2.5-3B-Instruct \
-        /root/autodl-tmp/models/Qwen2.5-14B-Instruct \
         /root/autodl-tmp/models/Qwen3-8B \
-        /root/autodl-tmp/models/Llama3.2-8B-Instruct)
+        /root/autodl-tmp/models/Llama3.2-8B-Instruct \
+        /root/autodl-tmp/models/Qwen2.5-14B-Instruct)
 
 data_dir=/root/hidden_prob/data/math
 

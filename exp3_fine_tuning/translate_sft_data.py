@@ -1,17 +1,7 @@
 """
 Translate sampled teacher SFT / candidate data into another language.
 
-Typical pipeline:
-  1) collect_data.py  -> English candidates {question, answer, res_ls}
-  2) translate_sft_data.py (this) -> target-lang question + res_ls
-  3) post_edit_stem.py (optional) -> fix STEM formatting
-  4) external RM best-of-n -> SFT {question, golden_res}
 
-Keeps English source fields for reference:
-  en_question, en_res_ls / en_golden_res
-Final answer field `answer` is kept unchanged (math gold).
-
-Example:
   CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp3_fine_tuning/translate_sft_data.py \
       --model_path /root/autodl-tmp/models/Qwen2.5-32B-Instruct \
       --data_path /root/hidden_prob/exp3_fine_tuning/teacher/math_en_n2_sft.json \
@@ -22,6 +12,7 @@ Example:
       --max_tokens 4096 \
       --max_model_len 8192 \
       --gpu_memory_utilization 0.9
+      
 """
 
 
@@ -59,11 +50,11 @@ TRANSLATE_SYSTEM = (
 
 
 
-def load_rows(data_path: str | Path, limit: int | None) -> list[dict]:
+def load_rows(data_path: str | Path) -> list[dict]:
     with open(data_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     assert isinstance(data, list) and data, f"empty data: {data_path}"
-    # question, answer, golden_res
+    # list[dict], dict_keys: question, answer, golden_res
 
     rows: list[dict] = []
     for i, row in enumerate(data):
@@ -74,9 +65,7 @@ def load_rows(data_path: str | Path, limit: int | None) -> list[dict]:
                 'golden_res': str(row['golden_res'])
             }
         )
-        
-    if limit is not None:
-        rows = rows[:limit]
+    
     return rows
 
 
@@ -85,17 +74,16 @@ def build_translate_prompt(
     tokenizer: AutoTokenizer,
     src_lang: str,
     tgt_lang: str,
-    text_type: str,
 ) -> str:
     user = (
-        f"Translate the following {text_type} from {LANG_NAME(src_lang)} "
+        f"Translate the following text from {LANG_NAME(src_lang)} "
         f"to {LANG_NAME(tgt_lang)}.\n"
         "Requirements:\n"
         f"- Write the translation in {LANG_NAME(tgt_lang)}.\n"
         "- Keep LaTeX / formulas / \\boxed{{...}} / code unchanged in structure.\n"
         "- Do not answer the question; only translate.\n"
         "- Output the translation only.\n\n"
-        f"{text_type.capitalize()}:\n{text}"
+        f"Text:\n{text}"
     )
     msg = [
         {"role": "system", "content": TRANSLATE_SYSTEM},
@@ -246,7 +234,6 @@ def parse_args() -> argparse.Namespace:
         help="vLLM context cap; keep modest to fit KV cache",
     )
     p.add_argument("--dtype", type=str, default="bfloat16")
-    p.add_argument("--limit", type=int, default=None)
     p.add_argument("--pick", type=str, default="first", choices=["first", "longest", "shortest"])
     return p.parse_args()
 
@@ -259,7 +246,7 @@ def main():
     if not args.save_path:
         args.save_path = str(DEFAULT_SAVE_DIR / f"math_{tgt_lang}_n2_sft_translated.json")
 
-    rows = load_rows(args.data_path, args.limit)
+    rows = load_rows(args.data_path)
     jobs = flatten_jobs(rows, translate_question=args.translate_question)
     print(
         f"[jobs] rows={len(rows)} translate_units={len(jobs)} "
