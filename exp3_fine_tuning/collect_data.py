@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--temperature", type=float, default=0.6)
     p.add_argument("--top_p", type=float, default=0.95)
     p.add_argument("--top_k", type=int, default=50)
-    p.add_argument("--max_tokens", type=int, default=2048)
+    p.add_argument("--max_tokens", type=int, default=4096)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--gpu_memory_utilization", type=float, default=0.90)
     p.add_argument("--tensor_parallel_size", type=int, default=1)
