@@ -14,8 +14,8 @@ Final answer field `answer` is kept unchanged (math gold).
 Example:
   CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp3_fine_tuning/translate_sft_data.py \
       --model_path /root/autodl-tmp/models/Qwen2.5-14B-Instruct \
-      --data_path /root/autodl-tmp/exp3_sft/teacher/math_en_n2_candidates.json \
-      --save_path /root/autodl-tmp/exp3_sft/teacher/math_es_n2_translated.json \
+      --data_path /root/hidden_prob/exp3_fine_tuning/teacher/math_en_n2_sft.json \
+      --save_path /root/hidden_prob/exp3_fine_tuning/teacher/math_es_n2_sft_translated.json \
       --src_lang en \
       --tgt_lang es \
       --temperature 0.2 \
@@ -46,8 +46,8 @@ LANG_NAME = {
 }
 
 DEFAULT_TRANSLATOR = "/root/autodl-tmp/models/Qwen2.5-14B-Instruct"
-DEFAULT_DATA_PATH = "/root/autodl-tmp/exp3_sft/teacher/math_en_n2_candidates.json"
-DEFAULT_SAVE_DIR = Path("/root/autodl-tmp/exp3_sft/teacher")
+DEFAULT_DATA_PATH = "/root/hidden_prob/exp3_fine_tuning/teacher/math_en_n2_sft.json"
+DEFAULT_SAVE_DIR = Path("/root/hidden_prob/exp3_fine_tuning/teacher")
 
 TRANSLATE_SYSTEM = (
     "You are a professional translator. "
@@ -63,7 +63,7 @@ def lang_name(code: str) -> str:
 
 
 def default_save_path(tgt_lang: str) -> str:
-    return str(DEFAULT_SAVE_DIR / f"math_{tgt_lang}_n2_translated.json")
+    return str(DEFAULT_SAVE_DIR / f"math_{tgt_lang}_n2_sft_translated.json")
 
 
 
@@ -261,13 +261,13 @@ def parse_args() -> argparse.Namespace:
         "--data_path",
         type=str,
         default=DEFAULT_DATA_PATH,
-        help="EN teacher json from collect_data.py",
+        help="EN SFT/candidate json (question + golden_res or res_ls)",
     )
     p.add_argument(
         "--save_path",
         type=str,
         default=None,
-        help="translated json path; default: teacher/math_{tgt_lang}_n2_translated.json",
+        help="translated json path; default: teacher/math_{tgt_lang}_n2_sft_translated.json",
     )
     p.add_argument("--sft_save_path", type=str, default=None, help="optional SFT export after translate")
     p.add_argument("--src_lang", type=str, default="en", choices=list(LANG_NAME))
