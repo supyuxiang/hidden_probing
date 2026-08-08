@@ -55,7 +55,7 @@ USER_PROMPT4TRANSLATE = (
 )
 
 
-def load_data(data_path: str | Path) -> list[str],list[str],list[str]:
+def load_data(data_path: str | Path):
     with open(data_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     assert isinstance(data, list) and data, f"empty data: {data_path}"

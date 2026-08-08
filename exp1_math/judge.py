@@ -54,6 +54,16 @@ user_prompt4judge = (
 
 ########################################################
 
+# Keep the tail: final answer / \\boxed{} is usually at the end.
+MAX_RES_TOKENS = 2048
+
+
+def _truncate_res(res: str, tokenizer: AutoTokenizer, max_tokens: int = MAX_RES_TOKENS) -> str:
+    ids = tokenizer.encode(res, add_special_tokens=False)
+    if len(ids) <= max_tokens:
+        return res
+    return tokenizer.decode(ids[-max_tokens:], skip_special_tokens=True)
+
 
 def _parse_verdict(text: str) -> bool:
     """Parse judge output. Prefer explicit `Verdict:` line; else last Correct/Incorrect."""
@@ -72,10 +82,12 @@ def judge_math(
     answer_ls: list[str],
     llm: LLM,
     tokenizer: AutoTokenizer,
+    max_res_tokens: int = MAX_RES_TOKENS,
 ) -> tuple[list[bool], torch.Tensor]:
     assert hasattr(tokenizer, 'apply_chat_template')
     formatted = []
     for res, answer in zip(res_ls, answer_ls):
+        res = _truncate_res(str(res), tokenizer, max_res_tokens)
         message = [
             {"role": "system", "content": system_prompt4judge},
             {"role": "user",'content': user_prompt4judge.replace('{answer}',answer).replace('{res}',res)},
@@ -112,6 +124,7 @@ def judge_math_api(
     max_tokens:int=512,
     temperature:float=0.0,
     max_workers:int=8,
+    max_res_chars: int = 8000,
 ) -> tuple[list[bool], torch.Tensor]:
     from openai import OpenAI
     client = OpenAI(
@@ -120,6 +133,9 @@ def judge_math_api(
     )
 
     def _judge_one(res:str, answer:str) -> bool:
+        res = str(res)
+        if len(res) > max_res_chars:
+            res = res[-max_res_chars:]
         messages = [
             {"role":"system","content":system_prompt4judge},
             {"role":"user","content":user_prompt4judge.replace('{answer}',answer).replace('{res}',res)},
