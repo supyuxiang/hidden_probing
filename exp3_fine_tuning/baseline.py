@@ -127,7 +127,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--max_tokens", type=int, default=4096)
     p.add_argument("--max_model_len", type=int, default=8192)
-    p.add_argument("--judge_max_model_len", type=int, default=8192)
+    p.add_argument("--judge_max_model_len", type=int, default=20000)
     p.add_argument("--gpu_memory_utilization", type=float, default=0.95)
     p.add_argument("--tensor_parallel_size", type=int, default=1)
     p.add_argument("--dtype", type=str, default="bfloat16")
@@ -141,44 +141,44 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---------- phase 1: greedy rollouts ----------
-    for model_path in args.models:
-        model_name = Path(model_path).name
-        model_out = out_dir / model_name
-        model_out.mkdir(parents=True, exist_ok=True)
+    # # ---------- phase 1: greedy rollouts ----------
+    # for model_path in args.models:
+    #     model_name = Path(model_path).name
+    #     model_out = out_dir / model_name
+    #     model_out.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n===== generate | {model_name} | max_tokens={args.max_tokens} | max_model_len={args.max_model_len} | langs={args.langs} =====")
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+    #     print(f"\n===== generate | {model_name} | max_tokens={args.max_tokens} | max_model_len={args.max_model_len} | langs={args.langs} =====")
+    #     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    #     if tokenizer.pad_token is None:
+    #         tokenizer.pad_token = tokenizer.eos_token
 
-        llm = LLM(
-            model_path,
-            gpu_memory_utilization=args.gpu_memory_utilization,
-            max_model_len=args.max_model_len,
-            dtype=args.dtype,
-            tensor_parallel_size=args.tensor_parallel_size,
-            trust_remote_code=True,
-        )
+    #     llm = LLM(
+    #         model_path,
+    #         gpu_memory_utilization=args.gpu_memory_utilization,
+    #         max_model_len=args.max_model_len,
+    #         dtype=args.dtype,
+    #         tensor_parallel_size=args.tensor_parallel_size,
+    #         trust_remote_code=True,
+    #     )
 
-        for lang in args.langs:
-            data_path = TEST_DATA[lang]
-            question_ls, answer_ls = load_qa(data_path, args.limit)
-            rows = greedy_rollout(
-                question_ls=question_ls,
-                answer_ls=answer_ls,
-                tokenizer=tokenizer,
-                llm=llm,
-                language_type=lang,
-                max_tokens=args.max_tokens,
-                seed=args.seed,
-            )
-            rollout_path = model_out / f"rollout_test_{lang}_greedy_tokens{args.max_tokens}.json"
-            save_json(rows, rollout_path)
+    #     for lang in args.langs:
+    #         data_path = TEST_DATA[lang]
+    #         question_ls, answer_ls = load_qa(data_path, args.limit)
+    #         rows = greedy_rollout(
+    #             question_ls=question_ls,
+    #             answer_ls=answer_ls,
+    #             tokenizer=tokenizer,
+    #             llm=llm,
+    #             language_type=lang,
+    #             max_tokens=args.max_tokens,
+    #             seed=args.seed,
+    #         )
+    #         rollout_path = model_out / f"rollout_test_{lang}_greedy_tokens{args.max_tokens}.json"
+    #         save_json(rows, rollout_path)
 
-        del llm, tokenizer, rows
-        gc.collect()
-        torch.cuda.empty_cache()
+    #     del llm, tokenizer, rows
+    #     gc.collect()
+    #     torch.cuda.empty_cache()
 
     # ---------- phase 2: judge ----------
     print(f"\n===== judge | {args.judge_model} =====")

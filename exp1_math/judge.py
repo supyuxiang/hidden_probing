@@ -83,7 +83,7 @@ def judge_math(
         formatted.append(tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True))
 
     sp = SamplingParams(
-        max_tokens=512,
+        max_tokens=4096,
         temperature=0.0,
         top_k=50,
         top_p=0.95,
@@ -196,7 +196,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    llm = LLM(model=args.judge_model, tensor_parallel_size=torch.cuda.device_count(), gpu_memory_utilization=args.gpu_memory_utilization)
+    llm = LLM(model=args.judge_model, tensor_parallel_size=torch.cuda.device_count(), gpu_memory_utilization=args.gpu_memory_utilization, max_model_len=20000)
     tokenizer = AutoTokenizer.from_pretrained(args.judge_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
