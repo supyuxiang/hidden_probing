@@ -14,12 +14,13 @@ Final answer field `answer` is kept unchanged (math gold).
 Example:
   CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp3_fine_tuning/translate_sft_data.py \
       --model_path /root/autodl-tmp/models/Qwen2.5-14B-Instruct \
-      --data_path /root/autodl-tmp/exp3_sft/teacher/math_en_n4_candidates.json \
-      --save_path /root/autodl-tmp/exp3_sft/teacher/math_es_n4_translated.json \
+      --data_path /root/autodl-tmp/exp3_sft/teacher/math_en_n2_candidates.json \
+      --save_path /root/autodl-tmp/exp3_sft/teacher/math_es_n2_translated.json \
       --src_lang en \
       --tgt_lang es \
       --temperature 0.2 \
       --max_tokens 4096 \
+      --max_model_len 8192 \
       --gpu_memory_utilization 0.9
 """
 
@@ -44,7 +45,9 @@ LANG_NAME = {
     "tr": "Turkish",
 }
 
-DEFAULT_TRANSLATOR = "/root/autodl-tmp/models/Qwen2.5-32B-Instruct"
+DEFAULT_TRANSLATOR = "/root/autodl-tmp/models/Qwen2.5-14B-Instruct"
+DEFAULT_DATA_PATH = "/root/autodl-tmp/exp3_sft/teacher/math_en_n2_candidates.json"
+DEFAULT_SAVE_DIR = Path("/root/autodl-tmp/exp3_sft/teacher")
 
 TRANSLATE_SYSTEM = (
     "You are a professional translator. "
@@ -53,6 +56,14 @@ TRANSLATE_SYSTEM = (
     "Do not solve the problem or add new content. "
     "Output ONLY the translation."
 )
+
+
+def lang_name(code: str) -> str:
+    return LANG_NAME[code]
+
+
+def default_save_path(tgt_lang: str) -> str:
+    return str(DEFAULT_SAVE_DIR / f"math_{tgt_lang}_n2_translated.json")
 
 
 
@@ -246,8 +257,18 @@ def maybe_export_sft(rows: list[dict], path: str | None, pick: str):
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Translate teacher SFT/candidate data with vLLM")
     p.add_argument("--model_path", type=str, default=DEFAULT_TRANSLATOR)
-    p.add_argument("--data_path", type=str, required=True, help="EN teacher json from collect_data.py")
-    p.add_argument("--save_path", type=str, required=True, help="translated json path")
+    p.add_argument(
+        "--data_path",
+        type=str,
+        default=DEFAULT_DATA_PATH,
+        help="EN teacher json from collect_data.py",
+    )
+    p.add_argument(
+        "--save_path",
+        type=str,
+        default=None,
+        help="translated json path; default: teacher/math_{tgt_lang}_n2_translated.json",
+    )
     p.add_argument("--sft_save_path", type=str, default=None, help="optional SFT export after translate")
     p.add_argument("--src_lang", type=str, default="en", choices=list(LANG_NAME))
     p.add_argument("--tgt_lang", type=str, required=True, choices=[c for c in LANG_NAME if c != "en"])
@@ -256,12 +277,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--temperature", type=float, default=0.1)
     p.add_argument("--top_p", type=float, default=0.95)
     p.add_argument("--top_k", type=int, default=50)
-    p.add_argument("--max_tokens", type=int, default=1024)
+    p.add_argument("--max_tokens", type=int, default=4096)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--gpu_memory_utilization", type=float, default=0.90)
     p.add_argument("--tensor_parallel_size", type=int, default=1)
-    p.add_argument("--max_model_len", type=int, default=None)
-    p.add_argument("--dtype", type=str, default="auto")
+    p.add_argument(
+        "--max_model_len",
+        type=int,
+        default=8192,
+        help="vLLM context cap; keep modest to fit KV cache",
+    )
+    p.add_argument("--dtype", type=str, default="bfloat16")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--pick", type=str, default="first", choices=["first", "longest", "shortest"])
     return p.parse_args()
@@ -271,6 +297,9 @@ def main():
     args = parse_args()
     from transformers import set_seed as hf_set_seed
     hf_set_seed(args.seed)
+
+    if not args.save_path:
+        args.save_path = default_save_path(args.tgt_lang)
 
     rows = load_rows(args.data_path, args.limit)
     jobs = flatten_jobs(rows, translate_question=args.translate_question)
@@ -300,9 +329,8 @@ def main():
         gpu_memory_utilization=args.gpu_memory_utilization,
         trust_remote_code=True,
         dtype=args.dtype,
+        max_model_len=args.max_model_len,
     )
-    if args.max_model_len is not None:
-        llm_kwargs["max_model_len"] = args.max_model_len
 
     llm = LLM(**llm_kwargs)
     sp = SamplingParams(
