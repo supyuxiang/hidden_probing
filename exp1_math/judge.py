@@ -28,17 +28,22 @@ sys.path.insert(0, str(ROOT))
 ###############  predefined judge prompts  ###############
 
 system_prompt4judge = (
-    'You are a careful math judge. Verify whether a student solution matches the correct answer. '
-    'Focus on mathematical equivalence of the final answer; ignore minor formatting issues or missing units.'
+    'You are a careful math judge. '
+    'Extract the solution\'s final answer first; if missing, judge Incorrect. '
+    'Otherwise judge by mathematical equivalence to the correct answer.'
 )
 user_prompt4judge = (
     'I have a full chain-of-thought solution to a math problem that needs verification.\n\n'
     'Correct answer: {answer}\n\n'
     'Solution:\n{res}\n\n'
-    'Please briefly check:\n'
-    '1) What final answer does the solution claim?\n'
-    '2) Is that answer mathematically equivalent to the correct answer?\n'
-    '3) If the final answer is missing, incomplete, or clearly wrong, mark Incorrect.\n\n'
+    'Follow these steps strictly:\n'
+    '1) Extract the final generated answer claimed by the Solution '
+    '(e.g. from \\boxed{...}, "Final Answer", or the last explicit answer statement). '
+    'If no clear final answer can be found, immediately judge Incorrect.\n'
+    '2) Only if a generated answer was found, check whether it is mathematically equivalent '
+    'to the Correct answer. Allow equivalent transformations '
+    '(e.g. 1/2 = 0.5, 2/4 = 1/2, x=3 vs 3, simplified radicals/fractions, reordered terms). '
+    'If they are equivalent, mark Correct; otherwise mark Incorrect.\n\n'
     'You may briefly reason step by step first (keep it short and simple). After your reasoning, output the final judgment '
     'on its own last line in exactly one of these two forms:\n'
     'Verdict: Correct\n'
@@ -153,16 +158,24 @@ def judge_math_api(
     
 
 
-def load_data(data_path: str | Path) -> tuple[list[str],list[str]]:
+def load_data(data_path: str | Path) -> tuple[list[str],list[str],list[str]]:
     question_ls = []
     res_ls = []
     answer_ls = []
     with open(data_path,'r',encoding='utf-8') as f:
         data = json.load(f)
-    for item in data:
+    for i, item in enumerate(data):
         question_ls.append(item['question'])
-        res_ls.append(item['res'])
         answer_ls.append(item['answer'])
+        # sampled: res; SFT: golden_res; candidates: res_ls (judge first)
+        if "res" in item:
+            res_ls.append(item["res"])
+        elif "golden_res" in item:
+            res_ls.append(item["golden_res"])
+        elif "res_ls" in item and item["res_ls"]:
+            res_ls.append(item["res_ls"][0])
+        else:
+            raise KeyError(f"row {i} needs res / golden_res / res_ls; keys={list(item.keys())}")
     return question_ls, answer_ls, res_ls
 
 def save_rewards(rewards:torch.Tensor,save_path:str|Path):
