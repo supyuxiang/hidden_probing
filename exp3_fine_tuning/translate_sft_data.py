@@ -13,7 +13,7 @@ Final answer field `answer` is kept unchanged (math gold).
 
 Example:
   CUDA_VISIBLE_DEVICES=0 python /root/hidden_prob/exp3_fine_tuning/translate_sft_data.py \
-      --model_path /root/autodl-tmp/models/Qwen2.5-14B-Instruct \
+      --model_path /root/autodl-tmp/models/Qwen2.5-32B-Instruct \
       --data_path /root/hidden_prob/exp3_fine_tuning/teacher/math_en_n2_sft.json \
       --save_path /root/hidden_prob/exp3_fine_tuning/teacher/math_es_n2_sft_translated.json \
       --src_lang en \
@@ -45,8 +45,8 @@ LANG_NAME = {
     "tr": "Turkish",
 }
 
-DEFAULT_TRANSLATOR = "/root/autodl-tmp/models/Qwen2.5-14B-Instruct"
-DEFAULT_DATA_PATH = "/root/hidden_prob/exp3_fine_tuning/teacher/math_en_n2_sft.json"
+DEFAULT_TRANSLATOR = "/root/autodl-tmp/models/Qwen2.5-32B-Instruct"
+DEFAULT_DATA_PATH = '/root/hidden_prob/exp3_fine_tuning/teacher/math_en_n2_sft.json'
 DEFAULT_SAVE_DIR = Path("/root/hidden_prob/exp3_fine_tuning/teacher")
 
 TRANSLATE_SYSTEM = (
@@ -58,68 +58,25 @@ TRANSLATE_SYSTEM = (
 )
 
 
-def lang_name(code: str) -> str:
-    return LANG_NAME[code]
-
-
-def default_save_path(tgt_lang: str) -> str:
-    return str(DEFAULT_SAVE_DIR / f"math_{tgt_lang}_n2_sft_translated.json")
-
-
 
 def load_rows(data_path: str | Path, limit: int | None) -> list[dict]:
     with open(data_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     assert isinstance(data, list) and data, f"empty data: {data_path}"
+    # question, answer, golden_res
 
     rows: list[dict] = []
     for i, row in enumerate(data):
-        if "question" not in row:
-            raise KeyError(f"row {i} missing question; keys={list(row.keys())}")
-
-        # candidates from collect_data.py
-        if "res_ls" in row and isinstance(row["res_ls"], list):
-            texts = [str(x) for x in row["res_ls"]]
-            kind = "candidates"
-        # SFT row
-        elif "golden_res" in row:
-            texts = [str(row["golden_res"])]
-            kind = "sft"
-        # flat sample_res-like
-        elif "res" in row:
-            texts = [str(row["res"])]
-            kind = "flat"
-        else:
-            raise KeyError(
-                f"row {i} needs res_ls / golden_res / res; keys={list(row.keys())}"
-            )
-
         rows.append(
             {
                 "question": str(row["question"]),
-                "answer": str(row.get("answer", "")),
-                "texts": texts,
-                "kind": kind,
-                "sample_id": row.get("sample_id"),
-                "meta": {
-                    k: v
-                    for k, v in row.items()
-                    if k
-                    not in {
-                        "question",
-                        "answer",
-                        "res_ls",
-                        "golden_res",
-                        "res",
-                        "sample_id",
-                    }
-                },
+                "answer": str(row["answer"]),
+                'golden_res': str(row['golden_res'])
             }
         )
-
+        
     if limit is not None:
         rows = rows[:limit]
-    print(f"[data] loaded {len(rows)} rows from {data_path}")
     return rows
 
 
@@ -131,10 +88,10 @@ def build_translate_prompt(
     text_type: str,
 ) -> str:
     user = (
-        f"Translate the following {text_type} from {lang_name(src_lang)} "
-        f"to {lang_name(tgt_lang)}.\n"
+        f"Translate the following {text_type} from {LANG_NAME(src_lang)} "
+        f"to {LANG_NAME(tgt_lang)}.\n"
         "Requirements:\n"
-        f"- Write the translation in {lang_name(tgt_lang)}.\n"
+        f"- Write the translation in {LANG_NAME(tgt_lang)}.\n"
         "- Keep LaTeX / formulas / \\boxed{{...}} / code unchanged in structure.\n"
         "- Do not answer the question; only translate.\n"
         "- Output the translation only.\n\n"
@@ -145,6 +102,7 @@ def build_translate_prompt(
         {"role": "user", "content": user},
     ]
     return tokenizer.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+
 
 
 def flatten_jobs(rows: list[dict], translate_question: bool) -> list[dict]:
@@ -299,7 +257,7 @@ def main():
     hf_set_seed(args.seed)
 
     if not args.save_path:
-        args.save_path = default_save_path(args.tgt_lang)
+        args.save_path = str(DEFAULT_SAVE_DIR / f"math_{tgt_lang}_n2_sft_translated.json")
 
     rows = load_rows(args.data_path, args.limit)
     jobs = flatten_jobs(rows, translate_question=args.translate_question)

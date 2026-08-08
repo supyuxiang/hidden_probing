@@ -1,7 +1,7 @@
 # !/usr/bin/env bash
 # Judge sampled responses on the train3000 subsets.
 
-judge_model=/root/autodl-tmp/models/Qwen2.5-14B-Instruct
+judge_model=/root/autodl-tmp/models/Qwen2.5-32B-Instruct
 gpu_util=0.95
 
 models=(/root/autodl-tmp/models/Qwen2.5-3B-Instruct \
