@@ -63,7 +63,7 @@ def load_data(data_path: str | Path):
     question_ls = answer_ls = golden_res_ls = []
     for item in data:
         question_ls.append(item['question'])
-        anwer_ls.append(item['answer'])
+        answer_ls.append(item['answer'])
         golden_res_ls.append(item['golden_res'])
     return question_ls, answer_ls, golden_res_ls
 
